@@ -2,7 +2,7 @@
   var PLACEHOLDER = [{ "sci": "Calypte anna", "com": "Anna's Hummingbird", "featured": true }, { "sci": "Passer domesticus", "com": "House Sparrow" }, { "sci": "Haemorhous mexicanus", "com": "House Finch" }, { "sci": "Turdus migratorius", "com": "American Robin" }, { "sci": "Zenaida macroura", "com": "Mourning Dove" }, { "sci": "Spinus psaltria", "com": "Lesser Goldfinch" }, { "sci": "Zonotrichia leucophrys", "com": "White-crowned Sparrow" }, { "sci": "Aphelocoma californica", "com": "California Scrub-Jay" }, { "sci": "Mimus polyglottos", "com": "Northern Mockingbird" }, { "sci": "Sayornis nigricans", "com": "Black Phoebe" }, { "sci": "Larus occidentalis", "com": "Western Gull" }, { "sci": "Corvus brachyrhynchos", "com": "American Crow" }];
   // Bumped whenever the offline sketch build changes, so the browser
   // doesn't keep a stale cache after we regenerate the sketches.
-  var SKETCH_VERSION = 'r12'; // r12: 84 eastern NA birds (PR #23) refined + re-cut. r11: full library restyle: every species
+  var SKETCH_VERSION = 'r21'; // r12: 84 eastern NA birds (PR #23) refined + re-cut. r11: full library restyle: every species
   // re-rendered (perched + flight) with clean cutouts.
   // Cache-bust for /api/img - bump whenever a bird gets re-rendered via
   // /api/regen or whenever you need every CF DC to drop its cached copy.
@@ -10,7 +10,7 @@
   // equivalent to a global cache purge for /api/img. (caches.default
   // .delete() in the worker only affects ONE colo at a time, so a
   // versioned URL is the only reliable way to invalidate everywhere.)
-  var IMG_VERSION = 'r12'; // r12: 84 eastern NA birds (PR #23) refined + re-cut. r11: full library restyle: every species re-rendered
+  var IMG_VERSION = 'r21'; // r12: 84 eastern NA birds (PR #23) refined + re-cut. r11: full library restyle: every species re-rendered
   // with clean cutouts, so drop every cached copy.
 
   // ---- Sliding pill helper ----
@@ -73,8 +73,9 @@
   // Each view's title text. The shared static-head shows one of these
   // based on the current view; identical adjacent values mean the title
   // stays put with no fade (collage and stats both say Heard Recently).
-  var VIEW_TITLES = ['Heard Recently', 'Heard Recently', 'Avian Atlas'];
-  var EMPTY_WINDOW_COPY = 'no detections heard in this window';
+  var IST_GARTEN = ((location.hostname||'').indexOf('zweitstandort') < 0);
+  var VIEW_TITLES = IST_GARTEN ? ['Servus gsagt.', 'Servus gsagt.', 'Vogel-Lexikon'] : ['Heard Recently', 'Heard Recently', 'Avian Atlas'];
+  var EMPTY_WINDOW_COPY = IST_GARTEN ? 'In diesem Zeitraum war nichts zu hören' : 'no detections heard in this window';
   var staticHead = document.querySelector('.static-head');
   var staticTitle = document.getElementById('staticTitle');
   function setTitleForView(i) {
@@ -2075,6 +2076,16 @@
   }
 
   function renderCollage(items, animate) {
+    // Abbruchgruende ZUERST pruefen, erst danach abraeumen. Frueher wurde die
+    // Collage geleert und der Aufbau anschliessend verschoben - bei jedem
+    // Wiederholungsversuch (alle 60-80 ms) blitzte sie dadurch leer auf.
+    // Silhouetten (DIMS/MASKS) und die Handschrift laden asynchron; solange
+    // sie fehlen, bleibt die bisherige Collage lieber stehen.
+    if (items.length) {
+      if (!tablesReady) { setTimeout(function () { renderCollage(items, animate); }, 80); return; }
+      if (labelsOn() && !labelFontReady) { setTimeout(function () { renderCollage(items, animate); }, 60); return; }
+      if (!collage.clientWidth || !collage.clientHeight) { setTimeout(function () { renderCollage(items, animate); }, 80); return; }
+    }
     collage.innerHTML = '';
     // Drop the previous render's hit-test tiles up front so a click or hover on
     // the empty-nest state (or a collage that hasn't laid out yet) resolves to
@@ -2101,13 +2112,7 @@
       }
       return;
     }
-    // Silhouettes (DIMS/MASKS) load async from dims.json/masks.json; until
-    // they arrive we cannot pack. Defer and retry, like the !W/!H case below.
-    // (The empty-nest path above needs no silhouettes and already returned.)
-    if (!tablesReady) { setTimeout(function () { renderCollage(items, animate); }, 80); return; }
-    if (labelsOn() && !labelFontReady) { setTimeout(function () { renderCollage(items, animate); }, 60); return; }
     var W = collage.clientWidth, H = collage.clientHeight;
-    if (!W || !H) { setTimeout(function () { renderCollage(items, animate); }, 80); return; }
 
     // Tuning depends on bird count - same viewport, very different
     // pack densities for 6 vs 48 birds.
@@ -3552,7 +3557,7 @@
   };
 
   function wikiUrl(sci) {
-    return 'https://en.wikipedia.org/wiki/' + encodeURIComponent(sci.replace(/ /g, '_'));
+    return 'https://de.wikipedia.org/wiki/' + encodeURIComponent(sci.replace(/ /g, '_'));
   }
   function ebirdUrl(sci) {
     var code = EBIRD_CODES[sci];
@@ -4798,6 +4803,18 @@
       })
       .catch(function (e) { console.warn('recent fetch failed', e); });
   }
+  // Kurzfassung dessen, was die Collage zeigt: Art und Anzahl je Vogel.
+  // Aendert sich daran nichts, muss auch nicht neu gezeichnet werden.
+  var letzterCollageAbdruck = null;
+  function collageAbdruck() {
+    var arten = (DATA.recent && DATA.recent.species) || [];
+    var s = arten.length + ';';
+    for (var i = 0; i < arten.length; i++) {
+      s += arten[i].sci + ':' + arten[i].n + '|';
+    }
+    return s;
+  }
+
   function refreshAll(animate) {
     var forHours = currentHours;
     var liveStats = hourlyDate === null;
@@ -4834,7 +4851,19 @@
       renderTimeIndependent(animate);
       renderHourly();
       updateStatsDateNav();
-      renderCollageFromData(animate);
+      // Der stille 30-Sekunden-Takt zeichnete die Collage bisher immer neu.
+      // renderCollage() reisst dafuer den ganzen Baum ab (collage.innerHTML =
+      // '') und legt jede Kachel samt Bild neu an - sichtbar als Flackern,
+      // alle 30 Sekunden, auch wenn sich gar nichts geaendert hatte.
+      // Jetzt wird nur gezeichnet, wenn sich die Artenliste unterscheidet.
+      // Ein angeforderter Lauf (animate) zeichnet weiterhin immer: erster
+      // Aufbau, Fensterwechsel und Ansichtswechsel haengen daran, und die
+      // Groessenaenderung geht ohnehin ihren eigenen Weg.
+      var abdruck = collageAbdruck();
+      if (animate || abdruck !== letzterCollageAbdruck) {
+        letzterCollageAbdruck = abdruck;
+        renderCollageFromData(animate);
+      }
     });
   }
 
@@ -6437,7 +6466,7 @@
       if (contentRequest !== POSTCARD_CONTENT_REQUEST) return;
       var desc = document.getElementById('modalDesc');
       renderAboutDescription(desc, j);
-      if (j.source && /^https:\/\/en\.wikipedia\.org\/wiki\//.test(j.source.url || '')) {
+      if (j.source && /^https:\/\/de\.wikipedia\.org\/wiki\//.test(j.source.url || '')) {
         document.getElementById('modalWiki').href = j.source.url;
       }
     }).catch(function () {
@@ -7414,6 +7443,35 @@
     ], 'services', 'reinstall');
     html += '</div>';
 
+    html += '<h2 class="admin-section-head">zustand</h2>';
+    html += '<div class="admin-actions-grid">'
+      + '<a class="admin-action" href="./eigenes/status.html">'
+      + '<span class="run">öffnen</span>'
+      + '<h4>Zustand der Anlage</h4>'
+      + '<p>Temperatur, Strom, Platte, Dienste, letzte Erkennung</p>'
+      + '</a>'
+      + '<a class="admin-action" href="./eigenes/versteckt.html">'
+      + '<span class="run">öffnen</span>'
+      + '<h4>Als falsch markiert</h4>'
+      + '<p>ausgeblendete Arten und Aufnahmen wieder einblenden</p>'
+      + '</a>'
+      // Die Wochenschau gibt es nur im Garten - zweitstandort ist eingefroren und
+      // bekommt keine neuen Folgen. Deshalb hinter der Host-Weiche.
+      + (IST_GARTEN
+          ? '<a class="admin-action" href="./eigenes/wochenschau.html">'
+            + '<span class="run">ansehen</span>'
+            + '<h4>Die Vogelwoche</h4>'
+            + '<p>der Wochenrückblick als kleines Video, sonntags neu</p>'
+            + '</a>'
+            // Der Live-Modus haengt am Pi im Garten - in zweitstandort steht keiner
+            // mehr, deshalb ebenfalls hinter der Host-Weiche.
+            + '<a class="admin-action" href="./eigenes/live.html">'
+            + '<span class="run">zuhören</span>'
+            + '<h4>Live im Garten</h4>'
+            + '<p>das Klangbild von jetzt, mit Namen an den Stellen, an denen etwas gefunden wurde</p>'
+            + '</a>'
+          : '')
+      + '</div>';
     html += '<h2 class="admin-section-head">your data</h2>';
     html += '<div class="admin-actions-grid">';
     function dataCard(title, desc, what) {

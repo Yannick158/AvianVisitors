@@ -385,6 +385,503 @@ var p=preference();d.setAttribute('data-theme',p==='light'||p==='dark'?p:systemT
 <script src="./stamp-batch-a.js?v=r341"></script>
   <script src="./stamp-batch-b.js?v=r318"></script>
 <script src="./stamp-batch-c.js?v=r234"></script>
-<script src="./apt.js?v=r180"></script>
+<script src="./apt.js?v=r195"></script>
+<script src="./temperatur-banner.js?v=1"></script>
+  <script src="/eigenes/waechter.js" defer></script>
+  <script src="/eigenes/wochenschau-hinweis.js?v=20260909173357" defer></script>
+  <script src="/eigenes/medien-stopp.js?v=20260909164023" defer></script>
+  <script src="/eigenes/artvideo.js?v=20260910010443" defer></script>
+  <script src="/eigenes/vergleich.js?v=20260909164023" defer></script>
+<script>
+/* garten: bairische Servus-Ueberschriften (Wechsel alle 2h, aufgeteilt klein/gross) + deutsches Info-Fenster. zweitstandort bleibt unveraendert. */
+(function(){
+  if (location.hostname.indexOf('zweitstandort') >= 0) return;
+  var pairs = [
+    ['Die Vögel ham heute', 'Servus gsagt.'],
+    ['Die Vögel ham', 'Servus gepfiffen.'],
+    ['Die Vögel ham schön', 'Servus gsunga.'],
+    ['Die paar Vögel ham heute', 'Servus gsagt.']
+  ];
+  function q(s){return document.querySelector(s);}
+  function setText(s,t){var e=q(s);if(e)e.textContent=t;}
+  function curPair(){return pairs[Math.floor(Date.now()/7200000)%pairs.length];}
+  function onAtlas(){
+    var bs=document.querySelectorAll('[data-i]');
+    for(var i=0;i<bs.length;i++){ if(bs[i].getAttribute('data-i')==='2') return bs[i].getAttribute('aria-current')==='true'; }
+    return false;
+  }
+  function sync(){
+    var eye=document.getElementById('aboutLink');
+    var big=document.getElementById('staticTitle');
+    if(onAtlas()){ if(eye&&eye.textContent!=='Die Vögel') eye.textContent='Die Vögel'; return; }
+    var p=curPair();
+    if(eye&&eye.textContent!==p[0]) eye.textContent=p[0];
+    if(big&&big.textContent!==p[1]) big.textContent=p[1];
+  }
+  function apply(){
+    setText('.about-eyebrow','Die Vögel');
+    setText('#aboutTitle','Die Vögel vor eurem Fenster');
+    var b=q('.about-body');
+    if(b) b.innerHTML='Ein kleines Mikrofon erkennt mit Cornells <a href="https://birdnet.cornell.edu/" target="_blank" rel="noopener">BirdNET</a> jeden Vogel, der vorbeikommt. Jede Art erscheint als Illustration in der Collage — so groß, wie oft sie zu hören war.';
+    setText('.about-explore','Zu den Vögeln →');
+    document.title='Die Vögel';
+  }
+  function go(){
+    apply(); sync(); setInterval(sync,60000);
+    var big=document.getElementById('staticTitle');
+    if(big && 'MutationObserver' in window){ new MutationObserver(sync).observe(big,{childList:true,characterData:true,subtree:true}); }
+  }
+  if(document.readyState!=='loading') go(); else document.addEventListener('DOMContentLoaded',go);
+})();
+</script>
+
+<script>
+/* garten: "als falsch markieren" - Art + Aufnahme umschaltbar. Seiten-Stil.
+   Observer trennt waehrend eigener Aenderungen ab -> keine Endlosschleife. zweitstandort unberuehrt. */
+(function(){
+  if (location.hostname.indexOf('zweitstandort') >= 0) return;
+
+  var css='\
+.postcard-recordings .rec-table-head{padding-right:74px !important;}\
+.postcard-recordings .rec-row-toggle{padding-right:74px !important;}\
+.postcard-recordings .rec-row{position:relative;}\
+.g-falsch-auf{position:absolute;top:8px;right:6px;z-index:6;font:9.5px/1 ui-sans-serif,system-ui,sans-serif;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-soft);background:transparent;border:0;cursor:pointer;padding:6px 8px;opacity:.5;transition:opacity .15s,color .15s;white-space:nowrap;}\
+.g-falsch-auf:hover{opacity:1;color:var(--ink);}\
+.rec-row[data-versteckt="1"] .rec-row-toggle{opacity:.4;}\
+.rec-row[data-versteckt="1"] .rec-row-toggle .when b,.rec-row[data-versteckt="1"] .rec-row-toggle .conf b,.rec-row[data-versteckt="1"] .rec-row-toggle .date-time b{text-decoration:line-through;}\
+.rec-row[data-versteckt="1"] .g-falsch-auf{opacity:.9;color:var(--ink-2);}\
+.g-falsch-art{display:block;width:max-content;max-width:100%;text-align:left;margin:9px 0 0;font:9.5px/1 ui-sans-serif,system-ui,sans-serif;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-soft);background:transparent;border:0;cursor:pointer;padding:4px 0;opacity:.6;transition:opacity .15s,color .15s;}\
+.g-falsch-art:hover{opacity:1;color:var(--ink);}';
+  var st=document.createElement('style'); st.textContent=css; (document.head||document.documentElement).appendChild(st);
+
+  var LISTE=null;
+  function ladeListe(){
+    return fetch('./avian/api/verstecken.php?action=liste',{credentials:'same-origin'})
+      .then(function(r){return r.json();})
+      .then(function(j){ var v=(j&&j.versteckt)||{}; LISTE={arten:new Set(v.arten||[]),aufnahmen:new Set(v.aufnahmen||[])}; return LISTE; })
+      .catch(function(){ LISTE={arten:new Set(),aufnahmen:new Set()}; return LISTE; });
+  }
+  function post(action,params){
+    var b=[]; for(var k in params){ b.push(encodeURIComponent(k)+'='+encodeURIComponent(params[k])); }
+    return fetch('./avian/api/verstecken.php?action='+encodeURIComponent(action),{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b.join('&')}).then(function(r){return r.json();});
+  }
+  function aktuelleSci(){ /* Der Artname steht im versteckten #modalSci, NICHT in der Adresszeile - daran scheiterte schon die Fotogalerie, und damit lief auch 'Art als falsch markieren' ins Leere. */ var e=document.getElementById('modalSci'); var t=e?(e.textContent||'').trim():''; if(t) return t; var m=/[#&]sci=([^&]+)/.exec(location.hash||''); return m?decodeURIComponent(m[1]):''; }
+  function markRow(row,hidden){
+    var v=hidden?'1':'0'; if(row.getAttribute('data-versteckt')!==v) row.setAttribute('data-versteckt',v);
+    var b=row.querySelector('.g-falsch-auf'), t=hidden?'↩ richtig':'✕ falsch'; if(b && b.textContent!==t) b.textContent=t;
+  }
+  function markArt(hidden){
+    var b=document.getElementById('g-falsch-art-btn'); if(!b)return;
+    var t=hidden?'↩ Art wieder einblenden':'✕ Art als falsch markieren'; if(b.textContent!==t) b.textContent=t;
+  }
+
+  document.addEventListener('click', function(e){
+    var t=e.target; if(!t||!t.closest) return;
+    var rb=t.closest('.g-falsch-auf');
+    if(rb){
+      e.preventDefault(); e.stopPropagation();
+      var row=rb.closest('.rec-row'); var file=row&&row.getAttribute('data-file'); if(!file) return;
+      var war=row.getAttribute('data-versteckt')==='1'; rb.disabled=true;
+      post(war?'aufnahme_zeigen':'aufnahme_verstecken',{file:file}).then(function(j){
+        rb.disabled=false;
+        if(j&&j.ok){ if(LISTE){ war?LISTE.aufnahmen.delete(file):LISTE.aufnahmen.add(file); } markRow(row,!war); }
+      }).catch(function(){ rb.disabled=false; });
+      return;
+    }
+    var ab=t.closest('.g-falsch-art');
+    if(ab){
+      e.preventDefault(); var sci=aktuelleSci(); if(!sci) return;
+      var war=!!(LISTE&&LISTE.arten.has(sci));
+      if(!war && !confirm('Diese Art als falsch markieren und ueberall ausblenden?')) return;
+      ab.disabled=true; ab.textContent='…';
+      post(war?'art_zeigen':'art_verstecken',{sci:sci}).then(function(j){
+        if(j&&j.ok){ if(LISTE){ war?LISTE.arten.delete(sci):LISTE.arten.add(sci); } location.reload(); }
+        else { ab.disabled=false; markArt(war); }
+      }).catch(function(){ ab.disabled=false; markArt(war); });
+      return;
+    }
+  }, true);
+
+  var obs;
+  function wieder(){ if(document.body && obs) obs.observe(document.body,{childList:true,subtree:true}); }
+  function verarbeiten(){
+    if(obs) obs.disconnect();
+    var neu=document.querySelectorAll('.rec-row:not([data-gf])'), i, r, b;
+    for(i=0;i<neu.length;i++){
+      r=neu[i]; r.setAttribute('data-gf','1');
+      b=document.createElement('button'); b.type='button'; b.className='g-falsch-auf';
+      b.textContent='✕ falsch'; b.title='diese Aufnahme als falsch markieren'; r.appendChild(b);
+    }
+    var stats=document.querySelector('.postcard-heading .postcard-stats');
+    if(stats && !document.getElementById('g-falsch-art-btn')){
+      b=document.createElement('button'); b.type='button'; b.id='g-falsch-art-btn'; b.className='g-falsch-art';
+      b.textContent='✕ Art als falsch markieren';
+      if(stats.parentNode) stats.parentNode.insertBefore(b, stats.nextSibling);
+    }
+    wieder();
+    if(neu.length){
+      (LISTE?Promise.resolve(LISTE):ladeListe()).then(function(L){
+        if(obs) obs.disconnect();
+        var rows=document.querySelectorAll('.rec-row[data-gf]'), k;
+        for(k=0;k<rows.length;k++){ markRow(rows[k], L.aufnahmen.has(rows[k].getAttribute('data-file'))); }
+        markArt(L.arten.has(aktuelleSci()));
+        wieder();
+      });
+    }
+  }
+  obs=new MutationObserver(verarbeiten);
+  function start(){ verarbeiten(); }
+  if(document.readyState!=='loading') start(); else document.addEventListener('DOMContentLoaded', start);
+})();
+</script>
+<script>
+/* vogel-live-knopf: Wellenform neben dem Menue.
+   In der App fuehrt sie auf deren eigene Live-Ansicht, im Browser auf
+   /eigenes/live.html. Nur im Garten - in zweitstandort steht kein Pi mehr. */
+(function(){
+  var INAPP = /BirdApp/.test(navigator.userAgent);
+  if (location.hostname.indexOf('zweitstandort') >= 0) return;
+
+  var css='\
+#g-live-btn{position:fixed;z-index:60;display:flex;align-items:center;justify-content:center;background:color-mix(in srgb,var(--paper) 88%,transparent);border:0;border-radius:999px;cursor:pointer;color:var(--ink-soft);box-shadow:0 1px 0 color-mix(in srgb,var(--ink) 9%,transparent);transition:color .15s;width:44px;}\
+#g-live-btn:hover{color:var(--ink);}';
+  var st=document.createElement('style'); st.textContent=css; (document.head||document.documentElement).appendChild(st);
+
+  /* Wellenform: fuenf senkrechte Striche, mittig, Hoehen 6/14/20/10/8. */
+  var WELLE='<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 9v6"/><path d="M8 5v14"/><path d="M12 2v20"/><path d="M16 7v10"/><path d="M20 8v8"/></svg>';
+
+  var btn=document.createElement('button');
+  btn.id='g-live-btn'; btn.type='button'; btn.setAttribute('aria-label','Live hören');
+  btn.innerHTML=WELLE;
+
+  function lege(){
+    if (document.body && !btn.parentNode) document.body.appendChild(btn);
+    var shell=document.getElementById('menuShell');
+    var r=shell?shell.getBoundingClientRect():{top:16,left:window.innerWidth-70,height:34};
+    btn.style.top=r.top+'px'; btn.style.height=r.height+'px';
+    /* Im Browser steht die Glocke schon auf diesem Platz (44 breit, 10 Abstand
+       zum Menue). Die Wellenform rueckt deshalb um Glockenbreite plus Luecke
+       weiter nach links. In der App gibt es keine Glocke - dort kein Versatz. */
+    var VERSATZ = INAPP ? 0 : 52;
+    btn.style.right=(window.innerWidth-r.left+10+VERSATZ)+'px';
+  }
+  lege(); window.addEventListener('resize', lege);
+  if (document.readyState==='loading') document.addEventListener('DOMContentLoaded', lege);
+
+  btn.addEventListener('click', function(){
+    location.href = INAPP ? 'birdapp://live' : '/eigenes/live.html';
+  });
+})();
+</script>
+<script>
+/* vogel-push-ui: Glocke + Panel fuer Web-Push-Benachrichtigungen. Nur garten. */
+(function(){
+  if (/BirdApp/.test(navigator.userAgent)) return;
+  if (location.hostname.indexOf('zweitstandort') >= 0) return;
+
+  var css='\
+#g-push-btn{position:fixed;z-index:60;display:flex;align-items:center;justify-content:center;background:color-mix(in srgb,var(--paper) 88%,transparent);border:0;border-radius:999px;cursor:pointer;color:var(--ink-soft);box-shadow:0 1px 0 color-mix(in srgb,var(--ink) 9%,transparent);transition:color .15s;width:44px;}\
+#g-push-btn:hover{color:var(--ink);}\
+#g-push-btn[data-an="1"]{color:var(--ink);}\
+#g-push-panel{position:fixed;z-index:61;min-width:230px;background:var(--paper);border-radius:12px;box-shadow:0 6px 30px color-mix(in srgb,var(--ink) 18%,transparent);padding:14px 14px 10px;font:13px/1.45 ui-sans-serif,system-ui,sans-serif;color:var(--ink);}\
+#g-push-panel h3{margin:0 0 8px;font:10px/1 ui-monospace,monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-soft);font-weight:normal;}\
+#g-push-panel button.opt{display:block;width:100%;text-align:left;background:transparent;border:0;border-radius:8px;padding:8px 10px;cursor:pointer;color:var(--ink);font:inherit;}\
+#g-push-panel button.opt:hover{background:color-mix(in srgb,var(--ink) 6%,transparent);}\
+#g-push-panel button.opt[data-aktiv="1"]{background:color-mix(in srgb,var(--ink) 9%,transparent);}\
+#g-push-panel button.opt small{display:block;color:var(--ink-soft);}\
+#g-push-status{margin:8px 2px 2px;font-size:11px;color:var(--ink-soft);min-height:14px;}';
+  var st=document.createElement('style'); st.textContent=css; (document.head||document.documentElement).appendChild(st);
+
+  var GLOCKE='<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>';
+
+  function modus(){ try{ return localStorage.getItem('vogel:push-modus')||'aus'; }catch(_){ return 'aus'; } }
+  function setModus(m){ try{ localStorage.setItem('vogel:push-modus',m); }catch(_){ } }
+
+  var btn=document.createElement('button');
+  btn.id='g-push-btn'; btn.type='button'; btn.setAttribute('aria-label','Benachrichtigungen');
+  btn.innerHTML=GLOCKE; btn.dataset.an=(modus()!=='aus')?'1':'0';
+  document.body.appendChild(btn);
+
+  var panel=document.createElement('div');
+  panel.id='g-push-panel'; panel.hidden=true;
+  panel.innerHTML='<h3>Benachrichtigungen</h3>'
+    +'<button class="opt" type="button" data-m="aus">Aus</button>'
+    +'<button class="opt" type="button" data-m="neu">Neue Arten<small>wenn ein Vogel zum ersten Mal zu hören ist</small></button>'
+    +'<button class="opt" type="button" data-m="alle">Jede Erkennung<small>gebündelt, etwa alle 10 Minuten</small></button>'
+    +'<div id="g-push-status"></div>';
+  document.body.appendChild(panel);
+
+  function lege(){
+    var shell=document.getElementById('menuShell');
+    var r=shell?shell.getBoundingClientRect():{top:16,left:window.innerWidth-70,height:34};
+    btn.style.top=r.top+'px'; btn.style.height=r.height+'px';
+    btn.style.right=(window.innerWidth-r.left+10)+'px';
+    panel.style.top=(r.top+r.height+8)+'px';
+    panel.style.right=(window.innerWidth-r.left+10)+'px';
+  }
+  lege(); window.addEventListener('resize', lege);
+
+  function status(t){ var e=document.getElementById('g-push-status'); if(e) e.textContent=t||''; }
+  function malen(){
+    var m=modus(); btn.dataset.an=(m!=='aus')?'1':'0';
+    panel.querySelectorAll('button.opt').forEach(function(b){ b.dataset.aktiv=(b.dataset.m===m)?'1':'0'; });
+  }
+
+  function b64zuArr(s){
+    var pad='='.repeat((4-s.length%4)%4);
+    var roh=atob((s+pad).replace(/-/g,'+').replace(/_/g,'/'));
+    var a=new Uint8Array(roh.length);
+    for(var i=0;i<roh.length;i++) a[i]=roh.charCodeAt(i);
+    return a;
+  }
+  var SCHLUESSEL=null;
+  function holeSchluessel(){
+    if(SCHLUESSEL) return Promise.resolve(SCHLUESSEL);
+    return fetch('./avian/api/push-anmelden.php?action=info',{credentials:'same-origin'})
+      .then(function(r){return r.json();})
+      .then(function(j){ SCHLUESSEL=j.schluessel; return SCHLUESSEL; });
+  }
+  function postJson(daten){
+    return fetch('./avian/api/push-anmelden.php',{method:'POST',credentials:'same-origin',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify(daten)}).then(function(r){return r.json();});
+  }
+
+  function anmelden(m){
+    if(!('serviceWorker' in navigator)||!('PushManager' in window)){
+      status('Dieser Browser unterstützt das nicht. iPhone/iPad: Seite über Teilen → „Zum Home-Bildschirm“ hinzufügen und dort öffnen.'); return;
+    }
+    status('einen Moment …');
+    Notification.requestPermission().then(function(erg){
+      if(erg!=='granted'){ status('Vom Browser blockiert – bitte Mitteilungen für diese Seite erlauben.'); return; }
+      navigator.serviceWorker.register('/sw.js',{scope:'/'}).then(function(reg){
+        return navigator.serviceWorker.ready.then(function(){ return reg; });
+      }).then(function(reg){
+        return holeSchluessel().then(function(k){
+          return reg.pushManager.getSubscription().then(function(alt){
+            if(alt) return alt;
+            return reg.pushManager.subscribe({userVisibleOnly:true, applicationServerKey:b64zuArr(k)});
+          });
+        });
+      }).then(function(abo){
+        return postJson({action:'an', modus:m, abo:abo.toJSON()});
+      }).then(function(j){
+        if(j&&j.ok){ setModus(m); malen(); status(m==='neu'?'An – nur neue Arten.':'An – jede Erkennung.'); }
+        else status('Fehler beim Anmelden.');
+      }).catch(function(e){ status('Fehler: '+(e&&e.message||e)); });
+    });
+  }
+  function abmelden(){
+    status('einen Moment …');
+    if(!('serviceWorker' in navigator)){ setModus('aus'); malen(); status('Aus.'); return; }
+    navigator.serviceWorker.getRegistration('/').then(function(reg){
+      if(!reg) return null;
+      return reg.pushManager.getSubscription();
+    }).then(function(abo){
+      if(!abo){ return null; }
+      var daten=abo.toJSON();
+      return abo.unsubscribe().then(function(){ return postJson({action:'ab', abo:{endpoint:daten.endpoint}}); });
+    }).then(function(){ setModus('aus'); malen(); status('Aus.'); })
+      .catch(function(){ setModus('aus'); malen(); status('Aus.'); });
+  }
+
+  btn.addEventListener('click', function(){ lege(); panel.hidden=!panel.hidden; malen(); });
+  document.addEventListener('click', function(e){
+    if(panel.hidden) return;
+    if(e.target===btn||btn.contains(e.target)||panel.contains(e.target)) return;
+    panel.hidden=true;
+  });
+  panel.addEventListener('click', function(e){
+    var b=e.target.closest && e.target.closest('button.opt'); if(!b) return;
+    var m=b.dataset.m;
+    if(m==='aus') abmelden(); else anmelden(m);
+  });
+  malen();
+})();
+</script>
+<script>
+/* garten: Fotogalerie in der Artkarte. Kamera-Knopf neben dem Pose-Umschalter
+   blendet ueber die Zeichnung frei lizenzierte Fotos ein (iNaturalist + Wikimedia).
+   Die Fotoflaeche liegt bewusst UNTER der Knopfreihe (z-index 2 < 3/4), damit man
+   jederzeit zurueck zur Zeichnung findet. */
+(function () {
+  if (location.hostname.indexOf('zweitstandort') >= 0) return;
+
+  var css = '\
+.g-foto-knopf{position:absolute;z-index:4;bottom:14px;display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;border:1px solid var(--paper-3);border-radius:999px;background:var(--paper);color:var(--ink-soft);cursor:pointer;padding:0;transition:color .15s,border-color .15s,background .15s;}\
+.g-foto-knopf:hover{color:var(--ink);border-color:var(--ink-soft);}\
+.g-foto-knopf[data-an="1"]{background:var(--ink);color:var(--paper);border-color:var(--ink);}\
+.g-foto-knopf svg{width:17px;height:17px;}\
+#g-foto-flaeche{position:absolute;inset:0;z-index:2;display:flex;align-items:center;justify-content:center;background:var(--paper);border-radius:inherit;overflow:hidden;}\
+#g-foto-flaeche[hidden]{display:none;}\
+#g-foto-bild{max-width:100%;max-height:100%;object-fit:contain;cursor:zoom-in;display:block;}\
+.g-nav{position:absolute;top:50%;transform:translateY(-50%);width:38px;height:38px;border:0;border-radius:999px;background:rgba(255,255,255,.82);color:#1a1612;font:20px/1 Georgia,serif;cursor:pointer;opacity:.55;transition:opacity .15s;}\
+.g-nav:hover{opacity:1;}\
+.g-prev{left:8px;} .g-next{right:8px;}\
+#g-foto-fuss{position:absolute;left:0;right:0;bottom:56px;z-index:3;padding:7px 12px;font:9.5px/1.4 ui-sans-serif,system-ui,sans-serif;letter-spacing:.04em;color:var(--ink-soft);background:linear-gradient(transparent,rgba(252,252,251,.94) 45%);text-align:center;}\
+#g-foto-laden{font:11px/1.5 Georgia,serif;color:var(--ink-soft);font-style:italic;}\
+#g-gross{position:fixed;inset:0;z-index:99999;background:rgba(20,18,16,.94);display:flex;align-items:center;justify-content:center;padding:70px 80px;cursor:zoom-out;}\
+#g-gross[hidden]{display:none;}\
+#g-gross-bild{max-width:100%;max-height:100%;object-fit:contain;box-shadow:0 8px 40px rgba(0,0,0,.5);cursor:default;}\
+#g-gross-zu{position:fixed;top:18px;right:20px;width:44px;height:44px;border:0;border-radius:999px;background:rgba(255,255,255,.14);color:#fff;font:24px/1 ui-sans-serif,system-ui,sans-serif;cursor:pointer;transition:background .15s;}\
+#g-gross-zu:hover{background:rgba(255,255,255,.3);}\
+.g-gross-nav{position:fixed;top:50%;transform:translateY(-50%);width:54px;height:54px;border:0;border-radius:999px;background:rgba(255,255,255,.14);color:#fff;font:30px/1 Georgia,serif;cursor:pointer;opacity:.85;transition:background .15s,opacity .15s;}\
+.g-gross-nav:hover{opacity:1;background:rgba(255,255,255,.3);}\
+#g-gross-prev{left:20px;} #g-gross-next{right:20px;}\
+#g-gross-fuss{position:fixed;left:0;right:0;bottom:0;padding:16px;text-align:center;font:11px/1.5 ui-sans-serif,system-ui,sans-serif;color:rgba(255,255,255,.75);pointer-events:none;}';
+  var st = document.createElement('style'); st.textContent = css;
+  (document.head || document.documentElement).appendChild(st);
+
+  var KAMERA = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5A1.5 1.5 0 0 1 4.5 7h2.2l1.1-1.8A1 1 0 0 1 8.7 4.7h6.6a1 1 0 0 1 .9.5L17.3 7h2.2A1.5 1.5 0 0 1 21 8.5v9A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5z"/><circle cx="12" cy="13" r="3.4"/></svg>';
+
+  var listen = {}, nr = 0, an = false, aktuell = '';
+  function sciJetzt() {
+    var e = document.getElementById('modalSci');
+    var t = e ? (e.textContent || '').trim() : '';
+    if (t) return t;
+    var m = /[#&]sci=([^&]+)/.exec(location.hash || '');
+    return m ? decodeURIComponent(m[1]) : '';
+  }
+  function el(id) { return document.getElementById(id); }
+  function vollAn() { var g = el('g-gross'); return !!(g && !g.hidden); }
+
+  function zeige() {
+    var l = listen[aktuell] || [];
+    var bild = el('g-foto-bild'), fuss = el('g-foto-fuss'), laden = el('g-foto-laden');
+    if (!l.length) {
+      if (bild) bild.hidden = true;
+      if (laden) { laden.hidden = false; laden.textContent = 'Keine freien Fotos gefunden.'; }
+      if (fuss) fuss.textContent = '';
+      return;
+    }
+    if (nr < 0) nr = l.length - 1;
+    if (nr >= l.length) nr = 0;
+    var b = l[nr];
+    var quelle = './avian/api/vogelbilder.php?sci=' + encodeURIComponent(aktuell) + '&bild=' + b.nr;
+    var text = (nr + 1) + ' von ' + l.length + '  ·  ' + (b.autor || 'unbekannt') + (b.lizenz ? '  ·  ' + b.lizenz : '');
+    if (laden) laden.hidden = true;
+    if (bild) { bild.hidden = false; bild.src = quelle; bild.alt = 'Foto: ' + aktuell; }
+    if (fuss) fuss.textContent = text;
+    if (vollAn()) {                       // Vollbild mitziehen
+      var gb = el('g-gross-bild'); if (gb) { gb.src = quelle; gb.alt = bild ? bild.alt : ''; }
+      var gf = el('g-gross-fuss'); if (gf) gf.textContent = text;
+    }
+  }
+
+  function laden(cb) {
+    if (listen[aktuell]) { cb(); return; }
+    var l = el('g-foto-laden');
+    if (l) { l.hidden = false; l.textContent = 'Fotos werden geladen …'; }
+    var bild = el('g-foto-bild'); if (bild) bild.hidden = true;
+    fetch('./avian/api/vogelbilder.php?sci=' + encodeURIComponent(aktuell), { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (j) { listen[aktuell] = (j && j.bilder) || []; cb(); })
+      .catch(function () { listen[aktuell] = []; cb(); });
+  }
+
+  function fotosAus() {
+    an = false;
+    var f = el('g-foto-flaeche'), k = el('g-foto-knopf');
+    if (f) f.hidden = true;
+    if (k) k.setAttribute('data-an', '0');
+  }
+
+  function umschalten() {
+    if (an) { fotosAus(); return; }
+    an = true;
+    var f = el('g-foto-flaeche'), k = el('g-foto-knopf');
+    if (k) k.setAttribute('data-an', '1');
+    if (f) f.hidden = false;
+    aktuell = sciJetzt(); nr = 0; laden(zeige);
+  }
+
+  function platziere() {
+    var tog = el('modalPoseToggle'), k = el('g-foto-knopf');
+    if (!tog || !k) return;
+    var links = 14;
+    if (tog.offsetWidth > 0) links = tog.offsetLeft + tog.offsetWidth + 8;
+    k.style.left = links + 'px';
+  }
+
+  function bauen() {
+    var tog = el('modalPoseToggle'), art = el('modalArtwork');
+    if (tog && !el('g-foto-knopf')) {
+      var b = document.createElement('button');
+      b.type = 'button'; b.id = 'g-foto-knopf'; b.className = 'g-foto-knopf';
+      b.title = 'Fotos ansehen'; b.setAttribute('aria-label', 'Fotos ansehen');
+      b.innerHTML = KAMERA;
+      if (tog.parentNode) tog.parentNode.insertBefore(b, tog.nextSibling);
+    }
+    if (art && !el('g-foto-flaeche')) {
+      if (getComputedStyle(art).position === 'static') art.style.position = 'relative';
+      var d = document.createElement('div');
+      d.id = 'g-foto-flaeche'; d.hidden = true;
+      d.innerHTML = '<span id="g-foto-laden">Fotos werden geladen …</span>'
+        + '<img id="g-foto-bild" alt="" hidden>'
+        + '<button type="button" class="g-nav g-prev" aria-label="vorheriges Foto">&lsaquo;</button>'
+        + '<button type="button" class="g-nav g-next" aria-label="nächstes Foto">&rsaquo;</button>'
+        + '<div id="g-foto-fuss"></div>';
+      art.appendChild(d);
+    }
+    if (!el('g-gross')) {
+      var g = document.createElement('div');
+      g.id = 'g-gross'; g.hidden = true;
+      g.innerHTML = '<img id="g-gross-bild" alt="">'
+        + '<button type="button" id="g-gross-zu" aria-label="schließen">&times;</button>'
+        + '<button type="button" class="g-gross-nav" id="g-gross-prev" aria-label="vorheriges Foto">&lsaquo;</button>'
+        + '<button type="button" class="g-gross-nav" id="g-gross-next" aria-label="nächstes Foto">&rsaquo;</button>'
+        + '<div id="g-gross-fuss"></div>';
+      document.body.appendChild(g);
+    }
+    platziere();
+    if (an && sciJetzt() !== aktuell) fotosAus();
+  }
+
+  document.addEventListener('click', function (e) {
+    var t = e.target; if (!t || !t.closest) return;
+
+    // Vollbild: schliessen / blaettern  (vor der Hintergrund-Pruefung!)
+    if (t.closest('#g-gross-zu')) { e.preventDefault(); e.stopPropagation(); el('g-gross').hidden = true; return; }
+    if (t.closest('#g-gross-prev')) { e.preventDefault(); e.stopPropagation(); nr--; zeige(); return; }
+    if (t.closest('#g-gross-next')) { e.preventDefault(); e.stopPropagation(); nr++; zeige(); return; }
+    if (t.id === 'g-gross-bild') { e.preventDefault(); e.stopPropagation(); return; }   // Bild selbst schliesst nicht
+    if (t.closest('#g-gross')) { e.preventDefault(); e.stopPropagation(); el('g-gross').hidden = true; return; }
+
+    // Zurueck zur Zeichnung, wenn eine Pose gewaehlt wird (apt.js darf weiterarbeiten)
+    if (t.closest('#modalPoseToggle')) { if (an) fotosAus(); return; }
+
+    if (t.closest('#g-foto-knopf')) { e.preventDefault(); e.stopPropagation(); umschalten(); return; }
+    if (t.closest('.g-prev')) { e.preventDefault(); e.stopPropagation(); nr--; zeige(); return; }
+    if (t.closest('.g-next')) { e.preventDefault(); e.stopPropagation(); nr++; zeige(); return; }
+    if (t.id === 'g-foto-bild') {
+      e.preventDefault(); e.stopPropagation();
+      var g = el('g-gross'); if (!g) return;
+      el('g-gross-bild').src = t.src;
+      el('g-gross-fuss').textContent = (el('g-foto-fuss') || {}).textContent || '';
+      g.hidden = false;
+      return;
+    }
+  }, true);
+
+  document.addEventListener('keydown', function (e) {
+    var voll = vollAn();
+    if (!an && !voll) return;
+    if (e.key === 'ArrowLeft') { nr--; zeige(); }
+    else if (e.key === 'ArrowRight') { nr++; zeige(); }
+    else if (e.key === 'Escape' && voll) { el('g-gross').hidden = true; }
+  });
+
+  window.addEventListener('hashchange', function () {
+    if (sciJetzt() !== aktuell && an) fotosAus();
+  });
+  window.addEventListener('resize', platziere);
+
+  var obs = new MutationObserver(function () {
+    obs.disconnect(); bauen();
+    if (document.body) obs.observe(document.body, { childList: true, subtree: true });
+  });
+  function start() { bauen(); if (document.body) obs.observe(document.body, { childList: true, subtree: true }); }
+  if (document.readyState !== 'loading') start(); else document.addEventListener('DOMContentLoaded', start);
+})();
+</script>
 </body>
 </html>
