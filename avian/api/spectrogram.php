@@ -13,6 +13,7 @@
 //                                "the most recent" - they can differ).
 
 declare(strict_types=1);
+require_once (getenv('APP_WURZEL') ?: '/srv') . '/avian/standort.php';   // welcher Standort - siehe app/docs/MEHRSTANDORT.md
 
 $sci = trim((string)($_GET['sci'] ?? ''));
 $file = trim((string)($_GET['file'] ?? ''));
@@ -31,7 +32,7 @@ if ($sci !== '' && !preg_match('/^[A-Za-z]{2,40}(?:[ ][a-z]{2,40}){1,3}$/', $sci
     exit;
 }
 
-$BY_DATE = dirname(__DIR__, 3) . '/BirdSongs/Extracted/By_Date';
+$BY_DATE = (vogel_standort()['daten'] . '/Extracted/By_Date');
 
 // ---- Direct-by-file lookup ----
 // BirdNET-Pi writes <base>.mp3 and <base>.png next to each other under
@@ -72,6 +73,20 @@ if ($file !== '') {
         }
     }
     if (!$candidates) {
+        // Ausgeduennt (je Art und Minute bleiben drei, siehe _ersatzaufnahme.php):
+        // dann die sicherste Aufnahme derselben Minute statt eines stummen Knopfs.
+        $basis = substr($png, 0, -4);                  // ...mp3.png -> ...mp3
+        require_once __DIR__ . '/_ersatzaufnahme.php';
+        [$ersatz, $bekannt] = ersatzaufnahme($BY_DATE, $basis, '.png');
+        if ($ersatz !== null) {
+            $candidates[] = $ersatz;
+        } elseif ($bekannt) {
+            http_response_code(404);
+            echo 'spectrogram not found';
+            exit;
+        }
+    }
+    if (!$candidates) {
         if (is_dir($BY_DATE)) {
             foreach (scandir($BY_DATE) as $d) {
                 if ($d[0] === '.') continue;
@@ -102,7 +117,7 @@ if ($file !== '') {
 // BirdNET-Pi names the species directories. Prefer it so non-English
 // installs (DATABASE_LANG=fr, etc.) resolve to the right directory.
 function resolve_common_from_db(string $sci): ?string {
-    $dbPath = dirname(__DIR__, 2) . '/scripts/birds.db';
+    $dbPath = (vogel_standort()['daten'] . '/birds.db');
     if (!is_readable($dbPath) || !class_exists('SQLite3')) return null;
     try {
         $db = new SQLite3($dbPath, SQLITE3_OPEN_READONLY);

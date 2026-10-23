@@ -124,9 +124,9 @@ function wikiSupplement(string $expanded, string $lead): string
  * narrow so articles such as House Finch can still supply sourced appearance
  * prose without downloading or heuristically scraping an entire article.
  */
-function wikiDescriptionSection(string $title, $ctx): string
+function wikiDescriptionSection(string $title, $ctx, string $host = 'de.wikipedia.org'): string
 {
-    $sectionsUrl = 'https://en.wikipedia.org/w/api.php?' . http_build_query([
+    $sectionsUrl = 'https://' . $host . '/w/api.php?' . http_build_query([
         'action'        => 'parse',
         'format'        => 'json',
         'formatversion' => '2',
@@ -158,7 +158,7 @@ function wikiDescriptionSection(string $title, $ctx): string
         return '';
     }
 
-    $sectionUrl = 'https://en.wikipedia.org/w/api.php?' . http_build_query([
+    $sectionUrl = 'https://' . $host . '/w/api.php?' . http_build_query([
         'action'             => 'parse',
         'format'             => 'json',
         'formatversion'      => '2',
@@ -511,11 +511,17 @@ if (!preg_match('/^[A-Za-z]{2,40}(?:[ ][a-z]{2,40}){1,3}$/', $sci)) {
     exit;
 }
 
+// P9 (23.10.2026): ?lang=en fragt die englische Wikipedia (Suche wie bisher ueber den
+// wissenschaftlichen Namen, die Weiterleitung fuehrt auf den Artikel). Alles andere,
+// auch ein fehlender Parameter, bleibt die deutsche Wikipedia - Antwort byte-gleich.
+// Der Cache (Browser, 24 h) ist URL-gebunden: lang=en ist eine andere Adresse.
+$wikiHost = (($_GET['lang'] ?? '') === 'en') ? 'en.wikipedia.org' : 'de.wikipedia.org';
+
 $ua = getenv('AV_USER_AGENT') ?: 'AvianVisitors/1.0 (+https://github.com/Twarner491/AvianVisitors)';
 $ctx = stream_context_create([
     'http' => ['header' => "User-Agent: $ua\r\n", 'timeout' => 8],
 ]);
-$url = 'https://en.wikipedia.org/w/api.php?' . http_build_query([
+$url = 'https://' . $wikiHost . '/w/api.php?' . http_build_query([
     'action'        => 'query',
     'format'        => 'json',
     'formatversion' => '2',
@@ -555,6 +561,18 @@ if ($thumb) {
 $extract = isset($page['extract']) && is_string($page['extract'])
     ? cleanWikiLead($page['extract'])
     : null;
+// Englisch (P9): eine Seite, die es nicht gibt, oder eine Begriffsklaerungsseite
+// ("... may refer to:") ist kein Artikel der Art - wie P10 (wochenschau/quellen.py)
+// lieber keine Beschreibung (und keinen toten Link) als Verweise.
+if ($wikiHost === 'en.wikipedia.org' && !empty($page['missing'])) {
+    echo json_encode(['extract' => null, 'thumbnail' => null]);
+    exit;
+}
+if ($wikiHost === 'en.wikipedia.org' && $extract !== null
+    && preg_match('/\bmay (?:also )?refer to\b/i', function_exists('mb_substr') ? mb_substr($extract, 0, 220, 'UTF-8') : substr($extract, 0, 220))) {
+    echo json_encode(['extract' => null, 'thumbnail' => null]);
+    exit;
+}
 $pageTitle = isset($page['title']) && is_string($page['title']) ? $page['title'] : null;
 $aboutSource = $extract ?? '';
 $initialParagraphs = $aboutSource ? fieldGuideParagraphs($aboutSource) : [];
@@ -564,7 +582,7 @@ $initialLength = textLength(implode(' ', $initialParagraphs));
 // lead. Pull the beginning of the article in those cases so the second About
 // paragraph can carry actual field marks or behavior rather than filler.
 if ($pageTitle && $extract && $initialLength < 360) {
-    $expandedUrl = 'https://en.wikipedia.org/w/api.php?' . http_build_query([
+    $expandedUrl = 'https://' . $wikiHost . '/w/api.php?' . http_build_query([
         'action'          => 'query',
         'format'          => 'json',
         'formatversion'   => '2',
@@ -592,7 +610,7 @@ if ($pageTitle && $extract && $initialLength < 360) {
 // Finch is one). Only then, read the article's named field-description section.
 $initialDistinctive = $aboutSource ? distinctiveFieldMarks($aboutSource) : [];
 if (!$initialDistinctive && $pageTitle) {
-    $descriptionSection = wikiDescriptionSection($pageTitle, $ctx);
+    $descriptionSection = wikiDescriptionSection($pageTitle, $ctx, $wikiHost);
     if ($descriptionSection !== '') {
         $aboutSource .= "\n" . $descriptionSection;
     }
@@ -613,7 +631,7 @@ $paragraphs = $fitted['paragraphs'];
 $distinctiveSentences = $fitted['distinctive'];
 $distinctive = $distinctiveSentences ? implode(' ', $distinctiveSentences) : null;
 $sourceUrl = $pageTitle
-    ? 'https://en.wikipedia.org/wiki/' . str_replace('%2F', '/', rawurlencode(str_replace(' ', '_', $pageTitle)))
+    ? 'https://' . $wikiHost . '/wiki/' . str_replace('%2F', '/', rawurlencode(str_replace(' ', '_', $pageTitle)))
     : null;
 
 echo json_encode([

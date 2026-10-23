@@ -2,8 +2,20 @@
 // Shared authentication, password-bound sessions, and cross-site request
 // checks for AvianVisitors' private station APIs. This file parses
 // birdnet.conf as data; it never sources or evaluates it.
+//
+// TAUBEN & CO (P3, 23.10.2026): Das zweite Passwort (Benutzer "birdnet",
+// Sitzung "avian_admin") ist abgeschafft - ein Login genuegt. Wer am
+// Anmeldetor (Caddy forward_auth, Cookie vogel_sitzung) vorbeikommt, sieht
+// alles. avian_require_admin() heisst jetzt "darf AENDERN" = angemeldet UND
+// nicht Rolle demo (siehe /srv/avian/rolle.php). Damit bleiben alle bisherigen
+// Aufrufe richtig: maintenance.php, archive.php, generate.php schuetzen damit
+// ihre Aktionen; config.php, birdnet-status.php und export.php pruefen das
+// Lesen selbst ueber die Rolle. Abgewiesen wird mit 403, nie 401 (fail2ban).
+// Die alten Basic-/Sitzungs-Funktionen bleiben stehen, weil andere Dateien sie
+// noch einbinden (cutout.php, _einstellungen.php) - sie entscheiden nichts mehr.
 
 declare(strict_types=1);
+require_once (getenv('APP_WURZEL') ?: '/srv') . '/avian/rolle.php';
 
 const AVIAN_ADMIN_SESSION_NAME = 'avian_admin';
 const AVIAN_ADMIN_SESSION_KEY = 'password_fingerprint';
@@ -343,29 +355,17 @@ function avian_admin_auth_decision(?array $server = null, ?string $password = nu
 }
 
 function avian_require_admin(): void {
-    $server = $_SERVER;
-    if (getenv('AV_REQUIRE_AUTH') !== '1' && avian_is_direct_local_request($server)) return;
+    // Angemeldet (das Tor hat das Cookie schon geprueft) UND Rolle familie.
+    // Demo und unerkannte Sitzungen bekommen 403 mit lesbarem Grund.
+    vogel_aendern_pruefen();
+}
 
-    $password = avian_admin_password();
-    if (!is_string($password) || $password === '') avian_api_fail(401, 'unauthorized');
-
-    // An explicit Authorization header must stand on its own. A malformed or
-    // wrong Basic attempt never falls through to an older valid session.
-    if (avian_has_authorization_header($server)) {
-        $decision = avian_admin_auth_decision($server, $password);
-        if (!$decision['allowed']) avian_api_fail($decision['status'], (string)$decision['error']);
-        // Browsers may keep sending cached Basic credentials after login.
-        // Reuse an already-valid session so parallel API requests do not race
-        // through repeated session-ID rotations.
-        if (avian_admin_session_valid($password, $server)) return;
-        if (!avian_create_admin_session($password, $server)) {
-            avian_api_fail(503, 'authentication session unavailable');
-        }
-        return;
-    }
-
-    if (avian_admin_session_valid($password, $server)) return;
-    avian_api_fail(401, 'unauthorized');
+/**
+ * Nur LESEN: hinter dem Anmeldetor darf jede Rolle lesen. Diese Funktion
+ * prueft nichts zusaetzlich - sie macht nur sichtbar, dass ein Endpunkt
+ * bewusst fuer alle Angemeldeten offen ist.
+ */
+function avian_require_login(): void {
 }
 
 /** @return array{allowed:bool,status:int,error:?string} */

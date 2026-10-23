@@ -9,24 +9,53 @@
 //           birdnet.conf and restarts birdnet_analysis + birdnet_recording
 //           so the changes take effect immediately.
 //
+// TAUBEN & CO (P3, 23.10.2026) - ein Login genuegt:
+//   * GET darf jede angemeldete Rolle. Demo bekommt KEINE Koordinaten und
+//     keinen Ortsnamen (LATITUDE, LONGITUDE, SITE_NAME fehlen in 'values').
+//   * POST nur Rolle familie (sonst 403, nie 401).
+//   * Erkennung (CONFIDENCE, SENSITIVITY, OVERLAP, SF_THRESH) und Standort
+//     (LATITUDE, LONGITUDE, SITE_NAME) aendern verlangt den Kopf
+//     X-Vogel-Bestaetigt: 1 - den setzt /eigenes/verwaltung.js erst, nachdem
+//     im Bestaetigungsdialog "Aendern" gedrueckt wurde. Fehlt er: 428.
+//     (Keine Sicherheitsgrenze - die ist die Rolle -, sondern ein Netz gegen
+//     versehentliches Verstellen, auch durch eine alte, zwischengespeicherte
+//     Oberflaeche ohne Dialog.)
+//   * Vor jeder solchen Aenderung merkt sich der Server die vorigen Werte
+//     (einstellungen/rueckgaengig-<standort>.json, gemeinsam mit Webseite und
+//     App - /srv/avian/rueckgaengig.php, Fix-Pass R-M3). Ein Klick stellt sie
+//     wieder her:
+//       GET  ?action=rueckgaengig  -> {ok, letzte:{zeit, vorher, nachher, rueckgaengig, von}|null}
+//       POST ?action=rueckgaengig  -> setzt 'vorher' (gleicher Weg wie ein
+//                                     normales Speichern, auch bestaetigt) -
+//                                     NUR wenn die aktuellen Werte noch die
+//                                     'nachher'-Werte sind, sonst 409.
+//   * Werte, die am Server gespeichert werden muessten (alles ausser den vier
+//     Pi-Werten, z. B. LATITUDE/LONGITUDE/SITE_NAME), gehen nur, wenn das
+//     Hilfsprogramm dafuer installiert ist - sonst 409 VOR jeder Aenderung,
+//     auch vor dem Pi-Wunsch (keine Teilaenderung, Fix-Pass S-m8).
+//
 // Direct requests on the station's private address are available without a
 // password. Forwarded and public-host requests verify BirdNET-Pi's configured
-// admin password here.
+// admin password here. (Upstream-Text; gilt hier nicht mehr, siehe oben.)
 //
 // Restart requires passwordless sudo for the caddy user that runs
 // php-fpm, dropped in place by install_services.sh at
 // /etc/sudoers.d/020_avian-admin.
 
 declare(strict_types=1);
+require_once (getenv('APP_WURZEL') ?: '/srv') . '/avian/standort.php';   // welcher Standort - siehe app/docs/MEHRSTANDORT.md
 header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store');
 
 require_once __DIR__ . '/admin-auth.php';
-avian_require_admin();
+avian_require_login();          // Lesen: jede angemeldete Rolle; Schreiben siehe POST
+// Erkennungswerte gehoeren dem Pi, nicht dieser Kopie - siehe unten (PI_SCHLUESSEL).
+require_once (getenv('APP_WURZEL') ?: '/srv') . '/avian/eigenes/app/_einstellungen.php';
+require_once (getenv('APP_WURZEL') ?: '/srv') . '/avian/rueckgaengig.php';   // gemeinsamer Rueckgaengig-Speicher
 
 // Path layout: /home/{USER}/BirdNET-Pi/avian/api/config.php
 $BIRDNETPI_DIR = dirname(__DIR__, 2);
-$CONF_PATH     = "$BIRDNETPI_DIR/birdnet.conf";
+$CONF_PATH     = vogel_standort()['conf'];
 $ADMIN_CONTROL = getenv('AV_ADMIN_CONTROL') ?: '/usr/local/sbin/avian-admin-control';
 
 // Whitelist: { config_key => { type, min?, max?, restart? } }
@@ -49,6 +78,52 @@ $ALLOWED = [
     'GEMINI_API_KEY'     => ['type' => 'secret', 'maxlen' => 200],
     'EBIRD_API_KEY'      => ['type' => 'secret', 'maxlen' => 120],
 ];
+
+// Diese vier stellt der PI ein. Die birdnet.conf hier auf dem Server ist nur
+// eine Kopie, die BirdNET nie liest - frueher zeigte das Menue deshalb 0,75,
+// waehrend der Pi mit 0,60 lief, und Speichern kam nie beim Pi an (09.10.2026).
+// Wo ein Pi steht, zeigt das Menue jetzt, was der Pi meldet, und schickt
+// Aenderungen als Wunsch in den Briefkasten - derselbe gepruefte Weg wie
+// eigenes/einstellungen.php (der Pi prueft selbst, bremst, nimmt zurueck).
+const PI_SCHLUESSEL = ['CONFIDENCE', 'SENSITIVITY', 'OVERLAP', 'SF_THRESH'];
+
+// Diese Werte aendern nur mit Bestaetigung - und sie lassen sich zuruecknehmen.
+const BESTAETIGEN = ['CONFIDENCE', 'SENSITIVITY', 'OVERLAP', 'SF_THRESH',
+                     'LATITUDE', 'LONGITUDE', 'SITE_NAME'];
+// Diese Werte sieht die Demo nie (Datenschutz: Standort der Station).
+const ORT_SCHLUESSEL = ['LATITUDE', 'LONGITUDE', 'SITE_NAME'];
+
+
+/**
+ * Die Werte, die das Menue JETZT zeigt - fuer genau die Schluessel, die sich
+ * gleich aendern sollen. Pi-Werte wie im GET (offener Wunsch, sonst Ist-Stand,
+ * sonst die Server-Kopie), alles andere aus der Server-Kopie.
+ */
+function aktuelle_werte(array $schluessel, string $confPfad, array $allowed): array {
+    $conf = read_conf($confPfad);
+    $pi = array_intersect($schluessel, PI_SCHLUESSEL) ? pi_einstellungen() : null;
+    $out = [];
+    foreach ($schluessel as $k) {
+        $w = null;
+        if (in_array($k, PI_SCHLUESSEL, true) && $pi !== null) {
+            $w = $pi['wunsch']['werte'][$k] ?? ($pi['ist']['werte'][$k] ?? null);
+            if (!is_int($w) && !is_float($w)) $w = null;
+        }
+        if ($w === null && array_key_exists($k, $conf)) $w = $conf[$k];
+        if ($w === null) continue;
+        $typ = $allowed[$k]['type'] ?? 'string';
+        if ($typ === 'float') $w = (float)$w;
+        elseif ($typ === 'int') $w = (int)$w;
+        else $w = (string)$w;
+        $out[$k] = $w;
+    }
+    return $out;
+}
+
+/** Was der Pi meldet und was noch unterwegs ist - oder null, wenn hier kein Pi steht. */
+function pi_einstellungen(): ?array {
+    return rk_pi_stand();   // gemeinsam mit Webseite/App (rueckgaengig.php)
+}
 
 function read_conf(string $path): array {
     if (!is_readable($path)) return [];
@@ -123,6 +198,18 @@ function safe_string_value(string $v): bool {
 
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
+$action = (string)($_GET['action'] ?? '');
+
+if ($method === 'GET' && $action === 'rueckgaengig') {
+    // Die Demo bekommt nichts davon: vorige Werte koennten Koordinaten sein.
+    if (!vogel_darf_aendern()) {
+        echo json_encode(['ok' => true, 'letzte' => null, 'nur_ansehen' => true]);
+        exit;
+    }
+    echo json_encode(['ok' => true, 'letzte' => rk_lesen()], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
 if ($method === 'GET') {
     $conf = read_conf($CONF_PATH);
     $out = [];
@@ -139,8 +226,33 @@ if ($method === 'GET') {
         elseif ($spec['type'] === 'int') $v = (int)$v;
         $out[$k] = $v;
     }
+    $pi = pi_einstellungen();
+    if ($pi !== null) {
+        // Angezeigt wird: noch offener Wunsch, sonst was der Pi tatsaechlich benutzt.
+        foreach (PI_SCHLUESSEL as $k) {
+            $w = $pi['wunsch']['werte'][$k] ?? ($pi['ist']['werte'][$k] ?? null);
+            // Meldet der Pi nichts (Tunnel weg), bleibt die Kopie stehen - das
+            // Menue sagt dann dazu, dass die Werte unsicher sind ('gemeldet').
+            if (is_int($w) || is_float($w)) $out[$k] = (float)$w;
+        }
+    }
+    $darfOrt = vogel_darf_ort_sehen();
+    if (!$darfOrt) {
+        foreach (ORT_SCHLUESSEL as $k) unset($out[$k]);
+    }
     echo json_encode([
         'values'   => $out,
+        'rolle'    => vogel_rolle() === '' ? 'unbekannt' : vogel_rolle(),
+        'nur_ansehen' => !vogel_darf_aendern(),
+        'ort_verborgen' => !$darfOrt,
+        'bestaetigen' => BESTAETIGEN,
+        'pi'       => $pi === null ? null : [
+            'gemeldet' => isset($pi['ist']['zeit']) ? (int)$pi['ist']['zeit'] : null,
+            // Der Pi meldet alle 20 s. Laenger als 5 min still: Werte unsicher.
+            'frisch'   => isset($pi['ist']['zeit']) && (time() - (float)$pi['ist']['zeit']) < 300,
+            'offen'    => $pi['wunsch'] !== null,
+            'wartet'   => is_string($pi['ist']['wartet'] ?? null) ? $pi['ist']['wartet'] : null,
+        ],
         'secrets'  => $secrets,
         'meta'     => $ALLOWED,
         'preserve' => (int)($conf['MAX_FILES_SPECIES'] ?? 0) >= 10000,
@@ -149,13 +261,39 @@ if ($method === 'GET') {
 }
 
 if ($method === 'POST') {
+    vogel_aendern_pruefen();        // nur Rolle familie, sonst 403
     avian_require_json_action();
-    $raw = file_get_contents('php://input');
-    $body = json_decode((string)$raw, true);
-    if (!is_array($body)) {
-        http_response_code(400);
-        echo json_encode(['error' => 'bad json']);
-        exit;
+    $istRueckgaengig = ($action === 'rueckgaengig');
+    if ($istRueckgaengig) {
+        // Ein Klick: die gemerkten vorigen Werte noch einmal speichern - aber
+        // nur, wenn seitdem niemand (Webseite, App, Menue) etwas anderes
+        // eingestellt hat. Unter derselben Sperre wie jedes Speichern.
+        if (!rk_sperren()) {
+            http_response_code(503);
+            echo json_encode(['error' => 'Rückgängig-Speicher gerade nicht verfügbar'], JSON_UNESCAPED_UNICODE);
+            exit;
+        }
+        $letzte = rk_lesen();
+        if ($letzte === null) {
+            http_response_code(409);
+            echo json_encode(['error' => 'Es gibt nichts zurückzunehmen.'], JSON_UNESCAPED_UNICODE);
+            exit;
+        }
+        if (!rk_passt($letzte, aktuelle_werte(array_keys($letzte['nachher']), $CONF_PATH, $ALLOWED))) {
+            http_response_code(409);
+            echo json_encode(['error' => 'Seitdem wurde schon wieder etwas geändert – Zurücknehmen geht nicht mehr.',
+                              'grund' => 'veraltet'], JSON_UNESCAPED_UNICODE);
+            exit;
+        }
+        $body = $letzte['vorher'];
+    } else {
+        $raw = file_get_contents('php://input');
+        $body = json_decode((string)$raw, true);
+        if (!is_array($body)) {
+            http_response_code(400);
+            echo json_encode(['error' => 'bad json']);
+            exit;
+        }
     }
     $updates = [];
     $errors = [];
@@ -198,6 +336,39 @@ if ($method === 'POST') {
         exit;
     }
 
+    // Erkennung/Standort nur mit Bestaetigung (siehe Kopf). Gilt auch fuer
+    // das Zuruecknehmen - das ist ja wieder eine Aenderung.
+    $heikel = array_values(array_intersect(array_keys($updates), BESTAETIGEN));
+    if ($heikel && (string)($_SERVER['HTTP_X_VOGEL_BESTAETIGT'] ?? '') !== '1') {
+        http_response_code(428);
+        echo json_encode(['error' => 'Bitte bestätigen – Seite neu laden, falls kein Dialog kam.',
+                          'grund' => 'bestaetigen', 'felder' => $heikel], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+    // Fix-Pass S-m8: Was am Server gespeichert werden muesste, VOR jeder
+    // Aenderung pruefen - sonst landete der Pi-Wunsch, und danach scheiterte
+    // der Server-Teil mit 500 (Teilaenderung, nichts zum Zuruecknehmen).
+    $piDa = array_intersect(array_keys($updates), PI_SCHLUESSEL) && pi_einstellungen() !== null;
+    $serverTeil = array_keys($piDa ? array_diff_key($updates, array_flip(PI_SCHLUESSEL)) : $updates);
+    if (isset($body['preserve'])) $serverTeil[] = 'MAX_FILES_SPECIES';
+    if ($serverTeil && !is_executable($ADMIN_CONTROL)) {
+        $ort = array_intersect($serverTeil, ORT_SCHLUESSEL);
+        http_response_code(409);
+        echo json_encode([
+            'error'  => $ort
+                ? 'Der Standort lässt sich hier nicht ändern – am Server fehlt das Hilfsprogramm dafür. Nichts geändert.'
+                : 'Diese Einstellung lässt sich am Server gerade nicht speichern (Hilfsprogramm fehlt). Nichts geändert.',
+            'grund'  => 'server',
+            'felder' => array_values(array_unique($serverTeil)),
+        ], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+
+    // Vorige Werte JETZT festhalten (vor dem Speichern), nur fuer die heiklen -
+    // unter der gemeinsamen Sperre, damit Webseite/App nicht dazwischenkommen.
+    if ($heikel) rk_sperren();
+    $vorher = $heikel ? aktuelle_werte($heikel, $CONF_PATH, $ALLOWED) : [];
+
     // Convenience flag: "preserve" toggle in the UI sets a high recording cap.
     // Off restores the installer default (0 = no per-species cap) rather
     // than 50, which would delete recordings a user never asked to lose.
@@ -208,6 +379,39 @@ if ($method === 'POST') {
             exit;
         }
         $updates['MAX_FILES_SPECIES'] = $body['preserve'] ? 99999 : 0;
+    }
+
+    // Erkennungswerte an den Pi statt in die Kopie. Immer alle vier schicken
+    // (offener Wunsch bzw. Ist-Stand, darueber die neuen) - sonst wuerde ein
+    // zweiter Regler den noch nicht abgeholten ersten Wunsch ueberschreiben.
+    $anPi = null;
+    $pi = array_intersect_key($updates, array_flip(PI_SCHLUESSEL)) ? pi_einstellungen() : null;
+    if ($pi !== null) {
+        $basis = $pi['wunsch']['werte'] ?? ($pi['ist']['werte'] ?? []);
+        $wunsch = [];
+        foreach (PI_SCHLUESSEL as $k) {
+            if (array_key_exists($k, $updates)) $wunsch[$k] = $updates[$k];
+            elseif (is_int($basis[$k] ?? null) || is_float($basis[$k] ?? null)) $wunsch[$k] = $basis[$k];
+            unset($updates[$k]);
+        }
+        [$werte, $grund] = einst_pruefen($wunsch);
+        if ($werte === null) {
+            http_response_code(400);
+            echo json_encode(['error' => $grund]);
+            exit;
+        }
+        if (!takt_pruefen(hash('sha256', 'einst|' . vogel_sitzung_kennung()), 'einstsetzen', 6)) {
+            http_response_code(429);
+            echo json_encode(['error' => 'Zu viele Änderungen - bitte eine Minute warten']);
+            exit;
+        }
+        [$gut, $id] = einst_wunsch_ablegen($werte, 'menue');
+        if (!$gut) {
+            http_response_code(503);
+            echo json_encode(['error' => $id]);
+            exit;
+        }
+        $anPi = ['id' => $id, 'werte' => $werte];
     }
 
     if ($updates) {
@@ -253,7 +457,21 @@ if ($method === 'POST') {
     foreach ($updates as $k => $v) {
         $shown[$k] = (($ALLOWED[$k]['type'] ?? '') === 'secret') ? '(saved)' : $v;
     }
-    echo json_encode(['ok' => true, 'updates' => $shown, 'restarted' => $restarted]);
+    if ($anPi !== null) $shown += $anPi['werte'];
+
+    // Rueckgaengig merken: was vorher galt und was jetzt gewuenscht ist. Nur
+    // Werte, die sich wirklich aendern - sonst gaebe es nichts zurueckzunehmen.
+    $merk = null;
+    if ($heikel) {
+        $nachher = [];
+        foreach ($heikel as $k) {
+            $neu = $anPi['werte'][$k] ?? ($updates[$k] ?? null);
+            if ($neu !== null) $nachher[$k] = $neu;
+        }
+        $merk = rk_merken($vorher, $nachher, $istRueckgaengig, 'menue');
+    }
+    echo json_encode(['ok' => true, 'updates' => $shown, 'restarted' => $restarted, 'an_pi' => $anPi,
+                      'rueckgaengig' => $merk], JSON_UNESCAPED_UNICODE);
     exit;
 }
 

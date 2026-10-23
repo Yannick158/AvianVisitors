@@ -385,18 +385,29 @@ var p=preference();d.setAttribute('data-theme',p==='light'||p==='dark'?p:systemT
 <script src="./stamp-batch-a.js?v=r341"></script>
   <script src="./stamp-batch-b.js?v=r318"></script>
 <script src="./stamp-batch-c.js?v=r234"></script>
-<script src="./apt.js?v=r195"></script>
+<script src="/eigenes/ort.php"></script>
+<script src="/eigenes/uebersetzung.js?v=p4-20261023"></script>
+<script src="/eigenes/artnamen.js?v=p9-20261023"></script>
+<script src="./apt.js?v=r198"></script>
 <script src="./temperatur-banner.js?v=1"></script>
-  <script src="/eigenes/waechter.js" defer></script>
+  <script src="/eigenes/waechter.js?v=p2-20261023" defer></script>
   <script src="/eigenes/wochenschau-hinweis.js?v=20260909173357" defer></script>
   <script src="/eigenes/medien-stopp.js?v=20260909164023" defer></script>
   <script src="/eigenes/artvideo.js?v=20260910010443" defer></script>
   <script src="/eigenes/vergleich.js?v=20260909164023" defer></script>
+  <script src="/eigenes/verwaltung.js?v=20261023" defer></script>
 <script>
-/* garten: bairische Servus-Ueberschriften (Wechsel alle 2h, aufgeteilt klein/gross) + deutsches Info-Fenster. zweitstandort bleibt unveraendert. */
+/* Deutsche Ueberschriften (Wechsel alle 2h, aufgeteilt klein/gross) + deutsches Info-Fenster.
+   Ton des Standorts aus window.VOGEL_ORT (/eigenes/ort.php): bairisch -> Servus, hochdeutsch -> Hallo,
+   englisch -> Original bleibt. */
 (function(){
-  if (location.hostname.indexOf('zweitstandort') >= 0) return;
-  var pairs = [
+  if ((window.VOGEL_ORT||{}).ton === 'englisch') return;
+  var pairs = ((window.VOGEL_ORT||{}).ton !== 'bairisch') ? [
+    ['Die Vögel haben heute', 'Hallo gesagt.'],
+    ['Die Vögel haben', 'Hallo gepfiffen.'],
+    ['Die Vögel haben schön', 'Hallo gesungen.'],
+    ['Die paar Vögel haben heute', 'Hallo gesagt.']
+  ] : [
     ['Die Vögel ham heute', 'Servus gsagt.'],
     ['Die Vögel ham', 'Servus gepfiffen.'],
     ['Die Vögel ham schön', 'Servus gsunga.'],
@@ -436,10 +447,10 @@ var p=preference();d.setAttribute('data-theme',p==='light'||p==='dark'?p:systemT
 </script>
 
 <script>
-/* garten: "als falsch markieren" - Art + Aufnahme umschaltbar. Seiten-Stil.
-   Observer trennt waehrend eigener Aenderungen ab -> keine Endlosschleife. zweitstandort unberuehrt. */
+/* "als falsch markieren" - Art + Aufnahme umschaltbar. Seiten-Stil.
+   Observer trennt waehrend eigener Aenderungen ab -> keine Endlosschleife. Standorte ohne Pi unberuehrt. */
 (function(){
-  if (location.hostname.indexOf('zweitstandort') >= 0) return;
+  if (!(window.VOGEL_ORT||{}).pi) return;
 
   var css='\
 .postcard-recordings .rec-table-head{padding-right:74px !important;}\
@@ -537,10 +548,10 @@ var p=preference();d.setAttribute('data-theme',p==='light'||p==='dark'?p:systemT
 <script>
 /* vogel-live-knopf: Wellenform neben dem Menue.
    In der App fuehrt sie auf deren eigene Live-Ansicht, im Browser auf
-   /eigenes/live.html. Nur im Garten - in zweitstandort steht kein Pi mehr. */
+   /eigenes/live.html. Nur an Standorten mit Pi. */
 (function(){
-  var INAPP = /BirdApp/.test(navigator.userAgent);
-  if (location.hostname.indexOf('zweitstandort') >= 0) return;
+  var INAPP = /TaubenApp/.test(navigator.userAgent);
+  if (!(window.VOGEL_ORT||{}).pi) return;
 
   var css='\
 #g-live-btn{position:fixed;z-index:60;display:flex;align-items:center;justify-content:center;background:color-mix(in srgb,var(--paper) 88%,transparent);border:0;border-radius:999px;cursor:pointer;color:var(--ink-soft);box-shadow:0 1px 0 color-mix(in srgb,var(--ink) 9%,transparent);transition:color .15s;width:44px;}\
@@ -569,15 +580,15 @@ var p=preference();d.setAttribute('data-theme',p==='light'||p==='dark'?p:systemT
   if (document.readyState==='loading') document.addEventListener('DOMContentLoaded', lege);
 
   btn.addEventListener('click', function(){
-    location.href = INAPP ? 'birdapp://live' : '/eigenes/live.html';
+    location.href = INAPP ? 'taubenundco://live' : '/eigenes/live.html';
   });
 })();
 </script>
 <script>
-/* vogel-push-ui: Glocke + Panel fuer Web-Push-Benachrichtigungen. Nur garten. */
+/* vogel-push-ui: Glocke + Panel fuer Web-Push-Benachrichtigungen. Nur an Standorten mit Pi. */
 (function(){
-  if (/BirdApp/.test(navigator.userAgent)) return;
-  if (location.hostname.indexOf('zweitstandort') >= 0) return;
+  if (/TaubenApp/.test(navigator.userAgent)) return;
+  if (!(window.VOGEL_ORT||{}).pi) return;
 
   var css='\
 #g-push-btn{position:fixed;z-index:60;display:flex;align-items:center;justify-content:center;background:color-mix(in srgb,var(--paper) 88%,transparent);border:0;border-radius:999px;cursor:pointer;color:var(--ink-soft);box-shadow:0 1px 0 color-mix(in srgb,var(--ink) 9%,transparent);transition:color .15s;width:44px;}\
@@ -699,12 +710,12 @@ var p=preference();d.setAttribute('data-theme',p==='light'||p==='dark'?p:systemT
 })();
 </script>
 <script>
-/* garten: Fotogalerie in der Artkarte. Kamera-Knopf neben dem Pose-Umschalter
+/* Fotogalerie in der Artkarte. Kamera-Knopf neben dem Pose-Umschalter
    blendet ueber die Zeichnung frei lizenzierte Fotos ein (iNaturalist + Wikimedia).
    Die Fotoflaeche liegt bewusst UNTER der Knopfreihe (z-index 2 < 3/4), damit man
    jederzeit zurueck zur Zeichnung findet. */
 (function () {
-  if (location.hostname.indexOf('zweitstandort') >= 0) return;
+  if (!(window.VOGEL_ORT||{}).pi) return;
 
   var css = '\
 .g-foto-knopf{position:absolute;z-index:4;bottom:14px;display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;border:1px solid var(--paper-3);border-radius:999px;background:var(--paper);color:var(--ink-soft);cursor:pointer;padding:0;transition:color .15s,border-color .15s,background .15s;}\

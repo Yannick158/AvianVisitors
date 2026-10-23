@@ -18,6 +18,7 @@
 // /avian/api/* path - see avian/forwarding/.
 
 declare(strict_types=1);
+require_once (getenv('APP_WURZEL') ?: '/srv') . '/avian/standort.php';   // welcher Standort - siehe app/docs/MEHRSTANDORT.md
 header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: public, max-age=30');
 
@@ -28,7 +29,7 @@ header('Cache-Control: public, max-age=30');
 // home directory in. getenv('HOME') would resolve to /var/lib/caddy
 // under PHP-FPM (BirdNET-Pi runs it as the caddy user), so it can't
 // be relied on.
-$DB_PATH = dirname(__DIR__, 2) . '/scripts/birds.db';
+$DB_PATH = (vogel_standort()['daten'] . '/birds.db');
 
 if (!file_exists($DB_PATH)) {
     http_response_code(503);
@@ -45,6 +46,54 @@ try {
     exit;
 }
 
+
+// Ausblend-Liste ("als falsch markiert", host-getrennt, von verstecken.php).
+$HIDE_PATH = vogel_standort()['verstecken'];
+$HIDE = ['arten' => [], 'aufnahmen' => []];
+if (is_readable($HIDE_PATH)) {
+    $hj = json_decode((string)file_get_contents($HIDE_PATH), true);
+    if (is_array($hj)) {
+        $HIDE['arten']     = array_flip(array_map('strval', $hj['arten'] ?? []));
+        $HIDE['aufnahmen'] = array_flip(array_map('strval', $hj['aufnahmen'] ?? []));
+    }
+}
+// Versteckte Aufnahmen aus Zaehlungen ausschliessen, damit eine Art mit lauter
+// versteckten Aufnahmen aus Collage/Listen faellt.
+$FILE_EXCL = '';
+if (!empty($HIDE['aufnahmen'])) {
+    $qs = array_map(function ($f) { return "'" . SQLite3::escapeString((string)$f) . "'"; }, array_keys($HIDE['aufnahmen']));
+    $FILE_EXCL = ' AND File_Name NOT IN (' . implode(',', $qs) . ')';
+}
+function ohne_versteckte_arten(array $rows, array $HIDE): array {
+    if (empty($HIDE['arten'])) return $rows;
+    return array_values(array_filter($rows, static function ($r) use ($HIDE) {
+        return !isset($HIDE['arten'][(string)($r['sci'] ?? '')]);
+    }));
+}
+
+/** Perchs Werte zu Aufnahmen: [File_Name => p] aus /srv/avian/perch/<standort>.db (nur lesend). */
+function perch_werte(array $dateien): array {
+    $id = (string)(vogel_standort()['id'] ?? '');
+    $pfad = '/srv/avian/perch/' . $id . '.db';
+    if ($id === '' || !preg_match('/^[a-z][a-z0-9-]{1,20}$/', $id) || !is_readable($pfad) || !$dateien) return [];
+    $aus = [];
+    try {
+        $pdb = new SQLite3($pfad, SQLITE3_OPEN_READONLY);
+        $pdb->busyTimeout(2000);
+        foreach (array_chunk(array_values(array_unique(array_filter($dateien))), 400) as $teil) {
+            $platz = implode(',', array_fill(0, count($teil), '?'));
+            $st = $pdb->prepare("SELECT datei, p FROM pruefung WHERE datei IN ($platz) AND p IS NOT NULL");
+            foreach ($teil as $k => $f) $st->bindValue($k + 1, $f, SQLITE3_TEXT);
+            $r = $st->execute();
+            while ($z = $r->fetchArray(SQLITE3_ASSOC)) $aus[(string)$z['datei']] = round((float)$z['p'], 4);
+        }
+        $pdb->close();
+    } catch (\Throwable $e) {
+        return [];
+    }
+    return $aus;
+}
+
 function rows(SQLite3 $db, string $sql, array $bind = []): array {
     $stmt = $db->prepare($sql);
     foreach ($bind as $k => $v) $stmt->bindValue($k, $v);
@@ -56,6 +105,27 @@ function rows(SQLite3 $db, string $sql, array $bind = []): array {
 function one(SQLite3 $db, string $sql, array $bind = []) {
     $r = rows($db, $sql, $bind);
     return $r[0] ?? null;
+}
+
+// ---- P9 (23.10.2026): englische Artnamen --------------------------------
+// ?lang=en tauscht nur die ANZEIGENAMEN (com) gegen englische aus
+// /srv/avian/oeffentlich/app/namen-en.json (sci -> en, BirdNET-V2.4-Labels,
+// Fallback: wissenschaftlicher Name). Die Datenbank des Pi bleibt deutsch.
+// Ohne lang=en (oder mit jedem anderen Wert) laeuft nichts davon an.
+function sprache_en(): bool {
+    return ($_GET['lang'] ?? '') === 'en';
+}
+function name_en_fuer(string $sci): string {
+    require_once (getenv('APP_WURZEL') ?: '/srv') . '/avian/namen_en.php';
+    return vogel_name_en($sci);
+}
+function namen_en_anwenden(array $rows): array {
+    if (!sprache_en()) return $rows;
+    foreach ($rows as &$r) {
+        if (isset($r['sci'])) $r['com'] = name_en_fuer((string)$r['sci']);
+    }
+    unset($r);
+    return $rows;
 }
 
 function validIsoDate(string $date): bool {
@@ -125,8 +195,10 @@ switch ($action) {
         $rs = rows($db,
           "SELECT Sci_Name AS sci, Com_Name AS com, MIN(Date||' '||Time) AS first_seen, "
         . "       MAX(Date||' '||Time) AS last_seen, COUNT(*) AS n, MAX(Confidence) AS best_conf "
-        . "FROM detections GROUP BY Sci_Name ORDER BY first_seen ASC"
+        . "FROM detections WHERE 1=1".$FILE_EXCL." GROUP BY Sci_Name ORDER BY first_seen ASC"
         );
+        $rs = ohne_versteckte_arten($rs, $HIDE);
+        $rs = namen_en_anwenden($rs);
         echo json_encode(['species' => $rs, 'as_of' => date('c')]);
         break;
     }
@@ -145,17 +217,19 @@ switch ($action) {
           "SELECT Sci_Name AS sci, Com_Name AS com, COUNT(*) AS n, MAX(Confidence) AS best_conf, "
         . "       MAX(Date||' '||Time) AS last_seen "
         . "FROM detections "
-        . "WHERE $where "
+        . "WHERE $where".$FILE_EXCL." "
         . "GROUP BY Sci_Name ORDER BY last_seen DESC",
           $bind
         );
+        $rs = ohne_versteckte_arten($rs, $HIDE);
+        $rs = namen_en_anwenden($rs);
         // for each row, attach the file of the top-confidence detection in the window
         foreach ($rs as &$r) {
             $best = one($db,
               "SELECT File_Name AS file, Date AS d, Time AS t, Confidence AS conf "
             . "FROM detections "
             . "WHERE Sci_Name = :sn "
-            . "AND $where "
+            . "AND $where".$FILE_EXCL." "
             . "ORDER BY Confidence DESC LIMIT 1",
               [':sn' => $r['sci'], ':anchor' => $ctx['anchor']]
             );
@@ -181,12 +255,21 @@ switch ($action) {
         . "LIMIT ".$limit." OFFSET ".$offset,
           [':sn' => $sci]
         );
+        foreach ($detections as &$dref) { $dref['versteckt'] = isset($HIDE['aufnahmen'][(string)($dref['file'] ?? '')]); }
+        unset($dref);
+        // Zweitmeinung (Perch v2, am Server nachgeprueft): Wahrscheinlichkeit
+        // der gemeldeten Art je Aufnahme. Eigene Datenbank, weil birds.db dem
+        // Pi gehoert. Fehlt sie oder ein Wert, bleibt 'perch' null.
+        $perch = perch_werte(array_map(fn($d) => (string)($d['file'] ?? ''), $detections));
+        foreach ($detections as &$dref) { $dref['perch'] = $perch[(string)($dref['file'] ?? '')] ?? null; }
+        unset($dref);
         $summary = one($db,
           "SELECT Com_Name AS com, COUNT(*) AS total, MIN(Date||' '||Time) AS first_seen, "
         . "       MAX(Date||' '||Time) AS last_seen, MAX(Confidence) AS best_conf "
         . "FROM detections WHERE Sci_Name = :sn",
           [':sn' => $sci]
         );
+        if (sprache_en() && is_array($summary)) $summary['com'] = name_en_fuer($sci);
         echo json_encode([
             'sci' => $sci,
             'summary' => $summary,
@@ -233,10 +316,11 @@ switch ($action) {
         $rs = rows($db,
           "SELECT Sci_Name AS sci, Com_Name AS com, MIN(Date||' '||Time) AS first_seen, "
         . "       COUNT(*) AS total "
-        . "FROM detections WHERE DATETIME(Date||' '||Time) <= DATETIME(:anchor) "
+        . "FROM detections WHERE DATETIME(Date||' '||Time) <= DATETIME(:anchor)".$FILE_EXCL." "
         . "GROUP BY Sci_Name ORDER BY first_seen DESC LIMIT :lim",
           [':anchor' => $ctx['anchor'], ':lim' => $limit]
         );
+        $rs = namen_en_anwenden($rs);
         echo json_encode([
             'date' => $ctx['date'], 'station_date' => $ctx['today'],
             'is_today' => $ctx['is_today'], 'species' => $rs, 'as_of' => date('c')
@@ -359,6 +443,7 @@ switch ($action) {
         . "WHERE d.Date = :d GROUP BY d.Sci_Name, hour",
           [':d' => $date, ':lim' => $limit]
         );
+        $rs = namen_en_anwenden($rs);
         // Pivot to one entry per species, ordered by the day's total.
         $species = [];
         foreach ($rs as $r) {

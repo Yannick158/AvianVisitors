@@ -26,11 +26,20 @@
 // command allowlist.
 
 declare(strict_types=1);
+require_once (getenv('APP_WURZEL') ?: '/srv') . '/avian/standort.php';   // welcher Standort - siehe app/docs/MEHRSTANDORT.md
 header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store');
 
 require_once __DIR__ . '/admin-auth.php';
-avian_require_admin();
+// TAUBEN & CO (P3, 23.10.2026): Neustarten nur Rolle familie (403 sonst, nie
+// 401). Systemangaben (system/services/logs/diag: Hostname, Kernel, Speicher,
+// Dienste, Protokolle, birdnet.conf) sieht seit dem Fix-Pass (S-m5) NUR die
+// Familie. Die Demo bekommt eine gekuerzte Fassung mit Hinweis: nur, ob die
+// Aufnahme laeuft (Alter des letzten Tonstuecks, Alter der birds.db) -
+// genug fuer die Karten der Systemseite, nichts ueber den Rechner.
+avian_require_login();
+$nurDemo = !vogel_darf_aendern();
+const DEMO_HINWEIS = 'Demo – Systemangaben sieht nur die Familie.';
 
 $action = $_GET['action'] ?? 'diag';
 
@@ -40,8 +49,8 @@ $action = $_GET['action'] ?? 'diag';
 //   dirname(__DIR__, 3)  -> /home/{USER}
 $BIRDNETPI_DIR = dirname(__DIR__, 2);
 $BIRDSONGS_DIR = dirname(__DIR__, 3) . '/BirdSongs';
-$DB_PATH       = "$BIRDNETPI_DIR/scripts/birds.db";
-$CONF_PATH     = "$BIRDNETPI_DIR/birdnet.conf";
+$DB_PATH       = (vogel_standort()['daten'] . '/birds.db');
+$CONF_PATH     = vogel_standort()['conf'];
 $STREAM_DIR    = "$BIRDSONGS_DIR/StreamData";
 $ADMIN_CONTROL = getenv('AV_ADMIN_CONTROL') ?: '/usr/local/sbin/avian-admin-control';
 
@@ -195,6 +204,7 @@ function read_conf_summary(string $p): array {
         'CONFIDENCE','SENSITIVITY','OVERLAP','REC_CARD','LATITUDE','LONGITUDE',
         'MODEL','SITE_NAME',
     ];
+    if (!vogel_darf_ort_sehen()) $keys = array_values(array_diff($keys, ['LATITUDE', 'LONGITUDE', 'SITE_NAME']));
     $vals = [];
     foreach (file($p, FILE_IGNORE_NEW_LINES) as $line) {
         if (!$line || $line[0] === '#') continue;
@@ -264,6 +274,41 @@ function logs_for(string $control, string $unit, int $lines): array {
     ];
 }
 
+/** Gekuerzte Systemangaben fuer die Demo: keine Rechnerdaten, kein Protokoll. */
+function demo_system(string $streamDir, string $db): array {
+    $s = read_streamdata($streamDir);
+    $d = read_db_age($db);
+    return [
+        'stream_data' => ['exists' => (bool)($s['exists'] ?? false), 'newest_age_s' => $s['newest_age_s'] ?? null,
+                          'newest_name' => ''],
+        'birds_db'    => ['exists' => (bool)($d['exists'] ?? false), 'modified_s' => $d['modified_s'] ?? null,
+                          'mtime' => ''],
+        'hostname'    => 'Demo',
+        'kernel'      => DEMO_HINWEIS,
+    ];
+}
+
+if ($nurDemo && $action !== 'restart') {
+    switch ($action) {
+        case 'system':
+            echo json_encode(demo_system($STREAM_DIR, $DB_PATH) + ['nur_ansehen' => true, 'hinweis' => DEMO_HINWEIS,
+                             'as_of' => date('c')], JSON_UNESCAPED_UNICODE);
+            exit;
+        case 'services':
+            echo json_encode(['services' => (object)[], 'nur_ansehen' => true, 'hinweis' => DEMO_HINWEIS,
+                              'as_of' => date('c')], JSON_UNESCAPED_UNICODE);
+            exit;
+        case 'logs':
+            echo json_encode(['text' => DEMO_HINWEIS, 'nur_ansehen' => true], JSON_UNESCAPED_UNICODE);
+            exit;
+        case 'diag':
+            echo json_encode(['system' => demo_system($STREAM_DIR, $DB_PATH), 'services' => (object)[],
+                              'recent_logs' => (object)[], 'nur_ansehen' => true, 'hinweis' => DEMO_HINWEIS,
+                              'as_of' => date('c')], JSON_UNESCAPED_UNICODE);
+            exit;
+    }
+}
+
 switch ($action) {
 
     case 'system': {
@@ -297,6 +342,7 @@ switch ($action) {
     }
 
     case 'restart': {
+        avian_require_admin();      // Demo -> 403
         avian_require_json_action();
         $unit = (string)($_GET['unit'] ?? '');
         if (!in_array($unit, ALLOWED_UNITS, true)) {

@@ -73,8 +73,12 @@
   // Each view's title text. The shared static-head shows one of these
   // based on the current view; identical adjacent values mean the title
   // stays put with no fade (collage and stats both say Heard Recently).
-  var IST_GARTEN = ((location.hostname||'').indexOf('zweitstandort') < 0);
-  var VIEW_TITLES = IST_GARTEN ? ['Servus gsagt.', 'Servus gsagt.', 'Vogel-Lexikon'] : ['Heard Recently', 'Heard Recently', 'Avian Atlas'];
+  // Standort-Merkmale kommen aus window.VOGEL_ORT (/eigenes/ort.php):
+  // pi = an diesem Standort steht ein Pi (Live, Vogelwoche), ton = Anrede.
+  var VOGEL_ORT = window.VOGEL_ORT || {};
+  var IST_GARTEN = !!VOGEL_ORT.pi;
+  var VIEW_TITLES = VOGEL_ORT.ton === 'hochdeutsch' ? ['Hallo gesagt.', 'Hallo gesagt.', 'Vogel-Lexikon']
+    : VOGEL_ORT.ton === 'bairisch' ? ['Servus gsagt.', 'Servus gsagt.', 'Vogel-Lexikon'] : ['Heard Recently', 'Heard Recently', 'Avian Atlas'];
   var EMPTY_WINDOW_COPY = IST_GARTEN ? 'In diesem Zeitraum war nichts zu hören' : 'no detections heard in this window';
   var staticHead = document.querySelector('.static-head');
   var staticTitle = document.getElementById('staticTitle');
@@ -5665,6 +5669,30 @@
     });
   }
 
+  // Wo ein Pi steht, gelten die vier Erkennungsregler auf dem Pi (config.php
+  // zeigt seine Werte und schickt Aenderungen als Wunsch in den Briefkasten).
+  function piHinweis(pi) {
+    if (!pi) return '';
+    var t;
+    if (!pi.frisch) t = 'Der Pi meldet sich gerade nicht – die Werte unten sind vielleicht nicht aktuell.';
+    else if (pi.offen) t = 'Eine Änderung ist unterwegs zum Pi' + (pi.wartet ? ' (' + pi.wartet + ')' : '') + '.';
+    else t = 'Diese vier Werte sind die, mit denen der Pi gerade erkennt. Änderungen übernimmt er nach etwa 20 Sekunden, höchstens alle 2 Minuten.';
+    return '<p class="hint" style="margin:0 0 10px">' + adminEsc(t) + '</p>';
+  }
+
+  // Zweitmeinung von Perch (am Server nachgeprueft, 14.10.2026): unter
+  // BirdNETs Wert klein "Perch 92 %". Unter 10 % in Warnfarbe - dann hoert
+  // Perch eher etwas anderes. Fehlt der Wert (noch nicht geprueft oder
+  // Aufnahme weggeduennt), bleibt die Zeile wie bisher.
+  function perchWert(p) {
+    if (p === null || p === undefined || !isFinite(+p)) return '';
+    var w = Math.round(+p * 100);
+    var zweifel = +p < 0.10;
+    return '<small class="perch-wert" title="Zweitmeinung: so sicher ist sich Perch bei dieser Art"'
+      + ' style="display:block;font-size:.78em;font-weight:400;opacity:' + (zweifel ? '1' : '.7')
+      + (zweifel ? ';color:#b5543c' : '') + '">Perch ' + w + ' %</small>';
+  }
+
   function saveSettings() {
     if (Object.keys(pending).length === 0) return;
     var body = JSON.stringify(pending);
@@ -5678,10 +5706,12 @@
       .then(function (res) {
         if (res.ok && res.j.ok) {
           pending = {};
-          setSaveState('saved ✓', 'ok');
-          setTimeout(function () { setSaveState(''); }, 1800);
+          setSaveState(res.j.an_pi ? 'an den Pi geschickt ✓' : 'saved ✓', 'ok');
+          setTimeout(function () { setSaveState(''); }, res.j.an_pi ? 4000 : 1800);
         } else {
-          setSaveState('save failed', 'err');
+          // Gruende vom Pi-Weg sind fuer Menschen geschrieben - zeigen.
+          var why = res.j && typeof res.j.error === 'string' && res.j.error.length < 120 ? res.j.error : '';
+          setSaveState(why && why !== 'validation' ? why : 'save failed', 'err');
         }
       })
       .catch(function () { setSaveState('network error', 'err'); });
@@ -6429,7 +6459,7 @@
           return '<li class="rec-row" data-file="' + escHtml(d.file || '') + '" data-date="' + escHtml(d.d || '') + '">'
             + '<button class="rec-row-toggle" type="button" aria-expanded="false">'
             + '<span class="when"><b>' + fmtRecTime(d.d, d.t) + '</b></span>'
-            + '<span class="conf"><b>' + ((+d.conf || 0) * 100).toFixed(0) + '%</b></span>'
+            + '<span class="conf"><b>' + ((+d.conf || 0) * 100).toFixed(0) + '%</b>' + perchWert(d.perch) + '</span>'
             + '<span class="date-time"><b>' + fmtDateLine(d.d, d.t) + '</b></span>'
             + '</button>'
             + '<div class="rec-spectro" aria-hidden="true">'
@@ -7135,8 +7165,10 @@
           + labelsRow()
           + atlasAlwaysAllRow()
           + '</section><section>'
+          + piHinweis(cfg.pi)
           + settingsSlider('CONFIDENCE', 'Confidence threshold', 'min score to log a detection', v.CONFIDENCE, 0.1, 0.95, 0.05, 2, 0.7)
-          + settingsSlider('SF_THRESH', 'Range filter', 'min likelihood a species is here this week', v.SF_THRESH, 0.001, 0.5, 0.001, 3, 0.03)
+          // Der Pi nimmt beim Regionalfilter hoechstens 0,1 an.
+          + settingsSlider('SF_THRESH', 'Range filter', 'min likelihood a species is here this week', v.SF_THRESH, 0.001, cfg.pi ? 0.1 : 0.5, 0.001, 3, 0.03)
           + settingsSlider('SENSITIVITY', 'Sensitivity', 'sigmoid slope on the classifier output', v.SENSITIVITY, 0.5, 1.5, 0.05, 2, 1.25)
           + settingsSlider('OVERLAP', 'Chunk overlap', 'seconds re-analyzed per pass', v.OVERLAP, 0, 2.5, 0.1, 1, 0.0)
           + '</section><section>'
@@ -7455,21 +7487,21 @@
       + '<h4>Als falsch markiert</h4>'
       + '<p>ausgeblendete Arten und Aufnahmen wieder einblenden</p>'
       + '</a>'
-      // Die Wochenschau gibt es nur im Garten - zweitstandort ist eingefroren und
-      // bekommt keine neuen Folgen. Deshalb hinter der Host-Weiche.
+      // Die Wochenschau gibt es nur an Standorten mit Pi (VOGEL_ORT.pi).
       + (IST_GARTEN
           ? '<a class="admin-action" href="./eigenes/wochenschau.html">'
             + '<span class="run">ansehen</span>'
             + '<h4>Die Vogelwoche</h4>'
             + '<p>der Wochenrückblick als kleines Video, sonntags neu</p>'
             + '</a>'
-            // Der Live-Modus haengt am Pi im Garten - in zweitstandort steht keiner
-            // mehr, deshalb ebenfalls hinter der Host-Weiche.
+            // Der Live-Modus haengt am Pi - ebenfalls nur mit Pi.
             + '<a class="admin-action" href="./eigenes/live.html">'
             + '<span class="run">zuhören</span>'
-            + '<h4>Live im Garten</h4>'
+            + '<h4>Live hören</h4>'
             + '<p>das Klangbild von jetzt, mit Namen an den Stellen, an denen etwas gefunden wurde</p>'
             + '</a>'
+            // Die Erkennung stellt seit 09.10.2026 das Einstellungsfeld des
+            // Menues selbst am Pi ein (config.php) - keine Extra-Karte mehr.
           : '')
       + '</div>';
     html += '<h2 class="admin-section-head">your data</h2>';

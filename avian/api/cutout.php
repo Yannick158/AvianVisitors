@@ -14,6 +14,7 @@
 // only from the station's direct LAN address and only for a detected species.
 
 declare(strict_types=1);
+require_once (getenv('APP_WURZEL') ?: '/srv') . '/avian/standort.php';   // welcher Standort - siehe app/docs/MEHRSTANDORT.md
 
 $sci = trim((string)($_GET['sci'] ?? ''));
 if ($sci === '') {
@@ -92,7 +93,7 @@ if (!avian_is_direct_local_request($_SERVER)) {
     exit;
 }
 
-$dbPath = dirname(__DIR__, 2) . '/scripts/birds.db';
+$dbPath = (vogel_standort()['daten'] . '/birds.db');
 if (!is_file($dbPath)) {
     http_response_code(404);
     echo 'species is not in this station';

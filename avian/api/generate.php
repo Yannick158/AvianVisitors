@@ -17,13 +17,70 @@
 // Uses the Gemini key saved via the settings panel (GEMINI_API_KEY in
 // birdnet.conf). Direct private-address requests are available without a
 // password; forwarded and public-host requests require the station password.
+//
+// TAUBEN & CO (P3, 23.10.2026) - kostet Gemini-Geld, darum:
+//   * status: jede angemeldete Rolle (zeigt jetzt auch heute/tageslimit).
+//   * start:  nur Rolle familie (sonst 403, nie 401), nur mit Kopf
+//             X-Vogel-Bestaetigt: 1 (setzt /eigenes/verwaltung.js nach dem
+//             Dialog; sonst 428) und hoechstens GEN_TAGESLIMIT Starts je
+//             Standort und Kalendertag (Zaehler in
+//             /srv/avian/einstellungen/illustrationen-<standort>.json, sonst
+//             429 mit lesbarem Satz). Die stuendliche Bremse ($HOUR_CAP) bleibt.
+//   HINWEIS: Caddy sperrt diese Datei (@gesperrt -> 404), und www-data darf
+//   heute weder die Sperrdatei noch den Illustrationsordner beschreiben. Ohne
+//   diese beiden Freigaben bleibt der Knopf tot - siehe politur-3/ABSTIMMUNG.md.
 
 declare(strict_types=1);
+require_once (getenv('APP_WURZEL') ?: '/srv') . '/avian/standort.php';   // welcher Standort - siehe app/docs/MEHRSTANDORT.md
 header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store');
 
 require_once __DIR__ . '/admin-auth.php';
-avian_require_admin();
+avian_require_login();          // status darf jede Rolle; start prueft unten selbst
+
+const GEN_TAGESLIMIT = 10;      // Starts je Standort und Kalendertag (Europe/Berlin)
+
+/** Zaehlerdatei des Standorts dieser Anfrage (www-data, nicht im Web). */
+function gen_tag_datei(): string {
+    return (getenv('APP_WURZEL') ?: '/srv') . '/avian/einstellungen/illustrationen-'
+         . vogel_standort()['id'] . '.json';
+}
+/**
+ * Der Kalendertag, an dem das Tageslimit wechselt: ausdruecklich Berlin
+ * (Fix-Pass R-m4). date() haengt an der date.timezone des PHP-Pools - steht
+ * die auf UTC, wechselte der Zaehler um 01:00/02:00 statt um Mitternacht.
+ */
+function gen_tag(): string {
+    return (new DateTimeImmutable('now', new DateTimeZone('Europe/Berlin')))->format('Y-m-d');
+}
+/** Wie viele Starts heute schon? */
+function gen_heute(): int {
+    $j = json_decode((string)@file_get_contents(gen_tag_datei()), true);
+    return (is_array($j) && ($j['tag'] ?? '') === gen_tag()) ? max(0, (int)($j['anzahl'] ?? 0)) : 0;
+}
+/**
+ * Zaehler um $delta veraendern, unter Dateisperre. +1 nur, wenn das Limit
+ * noch nicht erreicht ist. Rueckgabe: neuer Stand, oder null = Limit voll
+ * bzw. Zaehler nicht schreibbar (dann lieber nicht zeichnen - kostet Geld).
+ */
+function gen_tag_buchen(int $delta): ?int {
+    $datei = gen_tag_datei();
+    $dir = dirname($datei);
+    if (!is_dir($dir)) @mkdir($dir, 0750, true);
+    $fh = @fopen($datei, 'c+');
+    if ($fh === false) return null;
+    @flock($fh, LOCK_EX);
+    $j = json_decode((string)stream_get_contents($fh), true);
+    $heute = gen_tag();
+    $n = (is_array($j) && ($j['tag'] ?? '') === $heute) ? max(0, (int)($j['anzahl'] ?? 0)) : 0;
+    if ($delta > 0 && $n >= GEN_TAGESLIMIT) { @flock($fh, LOCK_UN); fclose($fh); return null; }
+    $n = max(0, $n + $delta);
+    ftruncate($fh, 0); rewind($fh);
+    $ok = fwrite($fh, (string)json_encode(['tag' => $heute, 'anzahl' => $n, 'limit' => GEN_TAGESLIMIT])) !== false;
+    @flock($fh, LOCK_UN); fclose($fh);
+    @chmod($datei, 0640);
+    return $ok ? $n : null;
+}
 
 $BIRDNETPI_DIR = dirname(__DIR__, 2);
 $ILLUS   = "$BIRDNETPI_DIR/avian/assets/illustrations";
@@ -34,7 +91,7 @@ if (!is_string($LOCK) || $LOCK === '') {
     $LOCK = '/run/lock/avian-generation.lock';
 }
 $LOG     = "$ILLUS/.generate.log";
-$DB_PATH = "$BIRDNETPI_DIR/scripts/birds.db";
+$DB_PATH = (vogel_standort()['daten'] . '/birds.db');
 $CONF    = "$BIRDNETPI_DIR/birdnet.conf";
 $STALE_S = 15 * 60;   // a "running" state older than this is a dead run
 $HOUR_CAP = 20;       // max starts per rolling hour (cost brake)
@@ -142,12 +199,28 @@ if ($action === 'status') {
         'error'   => $s['error'] ?? null,
         'at'      => $s['at'] ?? null,
         'chroma'  => chroma_count($ILLUS),
+        'heute'   => gen_heute(),
+        'tageslimit' => GEN_TAGESLIMIT,
+        'nur_ansehen' => !vogel_darf_aendern(),
     ]);
     exit;
 }
 
 if ($action === 'start') {
+    avian_require_admin();          // = vogel_aendern_pruefen(): Demo -> 403
     avian_require_json_action();
+    if ((string)($_SERVER['HTTP_X_VOGEL_BESTAETIGT'] ?? '') !== '1') {
+        http_response_code(428);
+        echo json_encode(['error' => 'Bitte bestätigen', 'grund' => 'bestaetigen'], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+    if (gen_heute() >= GEN_TAGESLIMIT) {
+        http_response_code(429);
+        header('Retry-After: 3600');
+        echo json_encode(['error' => 'Heute schon ' . GEN_TAGESLIMIT . ' Bilder gezeichnet – morgen wieder',
+                          'grund' => 'tageslimit', 'tageslimit' => GEN_TAGESLIMIT], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
     try {
         $body = json_decode((string)file_get_contents('php://input'), false, 16, JSON_THROW_ON_ERROR);
     } catch (JsonException $e) {
@@ -309,6 +382,18 @@ if ($action === 'start') {
         exit;
     }
 
+    // Tageslimit je Standort buchen - unter derselben Sperre wie die
+    // Stundenbremse, damit zwei gleichzeitige Klicks nicht beide durchkommen.
+    if (gen_tag_buchen(+1) === null) {
+        restore_file($STARTS, $startsExisted, $startsBefore);
+        flock($generationLock, LOCK_UN);
+        fclose($generationLock);
+        http_response_code(429);
+        echo json_encode(['error' => 'Heute schon ' . GEN_TAGESLIMIT . ' Bilder gezeichnet – morgen wieder',
+                          'grund' => 'tageslimit', 'tageslimit' => GEN_TAGESLIMIT], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+
     // Mark running before the spawn so the UI flips immediately; the
     // worker takes over this file once it boots.
     $stateJson = json_encode([
@@ -316,6 +401,7 @@ if ($action === 'start') {
         'step' => 'starting', 'at' => $now,
     ], JSON_INVALID_UTF8_SUBSTITUTE);
     if (!is_string($stateJson) || !atomic_write($STATE, $stateJson . "\n")) {
+        gen_tag_buchen(-1);
         restore_file($STARTS, $startsExisted, $startsBefore);
         flock($generationLock, LOCK_UN);
         fclose($generationLock);
@@ -352,6 +438,7 @@ if ($action === 'start') {
     );
     $spawnStatus = is_resource($process) ? proc_close($process) : -1;
     if ($spawnStatus !== 0) {
+        gen_tag_buchen(-1);
         restore_file($STATE, $stateExisted, $stateBefore);
         restore_file($STARTS, $startsExisted, $startsBefore);
         flock($generationLock, LOCK_UN);
@@ -363,7 +450,8 @@ if ($action === 'start') {
     flock($generationLock, LOCK_UN);
     fclose($generationLock);
 
-    echo json_encode(['ok' => true, 'sci' => $sci, 'com' => $com]);
+    echo json_encode(['ok' => true, 'sci' => $sci, 'com' => $com,
+                      'heute' => gen_heute(), 'tageslimit' => GEN_TAGESLIMIT]);
     exit;
 }
 
